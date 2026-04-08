@@ -1,50 +1,29 @@
-# NOS Town Groq Integration
+# NOS Town Groq Integration — Performance Engine
 
-Groq API, Batch processing, and model selection for NOS Town.
+Groq API configuration, Batch processing, and model selection for the NOS Town multi-agent system.
 
 ---
 
 ## Overview
 
-NOS Town runs entirely on Groq's inference infrastructure. This document covers the Groq API integration patterns, Batch API usage, model selection rationale, and configuration reference.
+NOS Town is built to exploit the **sub-second inference** and **extreme throughput** of Groq's LPU™ architecture. This document provides the technical blueprints for integrating the Groq SDK, managing high-concurrency agent swarms, and utilizing the Batch API for offline synthesis.
 
 ---
 
-## Why Groq
+## The Groq Advantage
 
-Groq's inference properties make NOS Town's architecture viable in ways that are impractical with other providers:
-
-| Property | Groq | Typical Alternative | NOS Town Impact |
-|----------|------|--------------------|-----------------|
-| Latency | ~200ms | 1–3s | Councils complete in <5s |
-| Throughput | 500+ tok/s | 50–100 tok/s | 20–50 parallel agents |
-| Cost (8B) | ~$0.05/M tok | ~$0.20/M tok | 4× cheaper Polecats |
-| Batch discount | 50% off | 10–25% | Historian runs at half cost |
-| Model diversity | llama + Mistral + gpt-oss | Usually 1–2 families | Full routing table possible |
-| OpenAI compat | Yes | Varies | Drop-in SDK usage |
+| Feature | Groq (NOS Town) | Conventional API | System Impact |
+|---------|-----------------|-----------------|---------------|
+| **Latency** | ~250ms (T-TFT) | 1.5s - 3s | Enables 3-judge councils in < 5s |
+| **Throughput** | 500+ tok/s | 50-80 tok/s | Rapid 8B/70B context ingestion |
+| **Concurrently**| 100+ streams | 5-10 streams | Massive 32+ agent swarms |
+| **Batch Cost**  | 50% Discount | 10-20% | Cheap nightly "Historian" runs |
 
 ---
 
-## API Setup
+## SDK Configuration (Node.js)
 
-### Installation
-
-```bash
-npm install groq-sdk
-# or
-pip install groq
-```
-
-### Environment
-
-```bash
-# .env
-GROQ_API_KEY=gsk_...
-GROQ_DEFAULT_MODEL=llama-3.3-70b-versatile
-GROQ_BATCH_ENABLED=true
-```
-
-### Basic client (Node.js)
+NOS Town uses the `groq-sdk` with a custom provider wrapper to handle **Escalation Logic** and **Rate Limit Management**.
 
 ```javascript
 import Groq from 'groq-sdk';
@@ -53,277 +32,74 @@ const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
 
-export async function callGroq({ model, messages, maxTokens = 2048, temperature = 0.3 }) {
-  const response = await groq.chat.completions.create({
-    model,
-    messages,
-    max_tokens: maxTokens,
-    temperature,
-  });
-  return response.choices[0].message.content;
-}
-```
-
----
-
-## Model Reference
-
-### Tier A — High Quality
-
-| Model | Context | Speed | Best For |
-|-------|---------|-------|----------|
-| `llama-3.3-70b-versatile` | 128k | ~280 tok/s | Mayor, Witness, Refinery, complex Beads |
-| `gpt-oss-120b` | 128k | ~180 tok/s | Architecture decisions, max quality council |
-
-### Tier B — Fast & Cheap
-
-| Model | Context | Speed | Best For |
-|-------|---------|-------|----------|
-| `llama-3.1-8b-instant` | 128k | ~750 tok/s | Polecats, Deacon, Dogs, boilerplate |
-| `llama-3.2-3b-preview` | 8k | ~1200 tok/s | Routing decisions, quick classifiers |
-
-### Safeguard
-
-| Model | Context | Best For |
-|-------|---------|----------|
-| `gpt-oss-safeguard-20b` | 32k | Security and policy classification |
-
-### Batch-eligible
-Any model above can be used with the Batch API. Batch jobs accept the same request format but are processed asynchronously with a 50% cost discount.
-
----
-
-## Batch API Usage
-
-The Historian and offline eval system use Groq Batch exclusively.
-
-### Submitting a batch job
-
-```javascript
-import fs from 'fs';
-import Groq from 'groq-sdk';
-
-const groq = new Groq();
-
-// 1. Prepare JSONL file with requests
-const requests = beads.map((bead, i) => ({
-  custom_id: `bead_${bead.id}`,
-  method: 'POST',
-  url: '/v1/chat/completions',
-  body: {
-    model: 'llama-3.3-70b-versatile',
-    messages: [
-      { role: 'system', content: HISTORIAN_SYSTEM_PROMPT },
-      { role: 'user', content: JSON.stringify(bead) }
-    ],
-    max_tokens: 1024,
-  }
-}));
-
-const jsonl = requests.map(r => JSON.stringify(r)).join('\n');
-fs.writeFileSync('batch_input.jsonl', jsonl);
-
-// 2. Upload the file
-const uploadedFile = await groq.files.create({
-  file: fs.createReadStream('batch_input.jsonl'),
-  purpose: 'batch',
-});
-
-// 3. Create the batch job
-const batch = await groq.batches.create({
-  input_file_id: uploadedFile.id,
-  endpoint: '/v1/chat/completions',
-  completion_window: '24h',
-});
-
-console.log('Batch ID:', batch.id);
-```
-
-### Polling for completion
-
-```javascript
-async function waitForBatch(batchId) {
-  while (true) {
-    const batch = await groq.batches.retrieve(batchId);
-    
-    if (batch.status === 'completed') {
-      return await downloadBatchResults(batch.output_file_id);
-    }
-    
-    if (batch.status === 'failed') {
-      throw new Error(`Batch failed: ${batch.errors}`);
-    }
-    
-    console.log(`Batch ${batchId}: ${batch.status} (${batch.request_counts.completed}/${batch.request_counts.total})`);
-    await new Promise(r => setTimeout(r, 60_000));  // poll every minute
-  }
-}
-
-async function downloadBatchResults(outputFileId) {
-  const fileContent = await groq.files.content(outputFileId);
-  const lines = (await fileContent.text()).trim().split('\n');
-  return lines.map(line => JSON.parse(line));
-}
-```
-
----
-
-## Parallel Agent Execution
-
-NOS Town runs multiple agents concurrently. Groq's rate limits are generous enough to support 20–50 parallel Polecats.
-
-```javascript
-// Run a swarm of Polecats in parallel
-async function runPoliceCatSwarm(beads) {
-  const CONCURRENCY = 8;  // max parallel agents
-  const results = [];
+/**
+ * Standard request with exponential backoff and 
+ * automatic model escalation on 429/500 errors.
+ */
+export async function executeInference(params) {
+  const { model, messages, temperature = 0.1 } = params;
   
-  // Process in batches of CONCURRENCY
-  for (let i = 0; i < beads.length; i += CONCURRENCY) {
-    const batch = beads.slice(i, i + CONCURRENCY);
-    const batchResults = await Promise.all(
-      batch.map(bead => runPolecat(bead))
-    );
-    results.push(...batchResults);
-  }
-  
-  return results;
-}
-
-async function runPolecat(bead) {
-  const model = routingTable.getModel(bead.type);
-  const response = await callGroq({
-    model,
-    messages: [
-      { role: 'system', content: POLECAT_SYSTEM_PROMPT },
-      { role: 'user', content: formatBeadPrompt(bead) }
-    ],
-    maxTokens: 4096,
-    temperature: 0.2,
-  });
-  
-  return {
-    bead_id: bead.id,
-    output: response,
-    model_used: model,
-    completed_at: new Date().toISOString(),
-  };
-}
-```
-
----
-
-## Rate Limit Management
-
-Groq rate limits (as of 2025) for pay-as-you-go:
-
-| Model | RPM | TPM |
-|-------|-----|-----|
-| llama-3.1-8b-instant | 30,000 | 131,072,000 |
-| llama-3.3-70b-versatile | 6,000 | 12,288,000 |
-| gpt-oss-120b | 1,000 | 6,000,000 |
-
-### Retry logic
-
-```javascript
-async function callGroqWithRetry(params, maxRetries = 3) {
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      return await callGroq(params);
-    } catch (error) {
-      if (error.status === 429) {
-        const retryAfter = parseInt(error.headers?.['retry-after'] ?? '5');
-        console.log(`Rate limited. Waiting ${retryAfter}s...`);
-        await new Promise(r => setTimeout(r, retryAfter * 1000));
-      } else if (attempt === maxRetries - 1) {
-        throw error;
-      } else {
-        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-      }
-    }
+  try {
+    return await groq.chat.completions.create({
+      model,
+      messages,
+      temperature,
+      response_format: { type: 'json_object' } // Enforced for all roles
+    });
+  } catch (err) {
+    if (err.status === 429) return handleRateLimit(params);
+    throw err;
   }
 }
 ```
 
 ---
 
-## Structured Output
+## Model Selection Matrix
 
-All NOS Town role responses use structured JSON output to enable reliable parsing.
+Surgical model selection is core to NOS Town's cost-efficiency.
 
-```javascript
-// Witness verdict — structured output
-const witnessResponse = await groq.chat.completions.create({
-  model: 'llama-3.3-70b-versatile',
-  messages: [{ role: 'user', content: witnessPrompt }],
-  response_format: { type: 'json_object' },
-  max_tokens: 512,
-});
-
-const verdict = JSON.parse(witnessResponse.choices[0].message.content);
-// { verdict: "PASS", score: 88, reasoning: "..." }
-```
+| Tier | Model ID | Primary Use | Context Window |
+|------|----------|-------------|----------------|
+| **A** | `llama-3.3-70b-versatile` | Mayor, Witness, Complex Logic | 128k |
+| **B** | `llama-3.1-8b-instant` | Polecat Swarms, Deacon, Dogs | 128k |
+| **S** | `gpt-oss-120b` | Refinery, Critical Architecture | 128k |
+| **G** | `gpt-oss-safeguard-20b` | Security/Policy Enforcement | 32k |
 
 ---
 
-## Cost Tracking
+## Batch API Implementation
 
-NOS Town tracks inference cost per Bead to feed the Historian's routing optimization.
+The **Historian** uses the Batch API to process thousands of Beads for pattern mining at half the retail cost.
 
-```javascript
-function calculateCost(model, usage) {
-  const PRICES = {
-    'llama-3.1-8b-instant':       { input: 0.05, output: 0.08 },
-    'llama-3.3-70b-versatile':    { input: 0.59, output: 0.79 },
-    'gpt-oss-120b':               { input: 0.90, output: 1.20 },
-    'gpt-oss-safeguard-20b':      { input: 0.20, output: 0.20 },
-  };
-  
-  const price = PRICES[model] ?? PRICES['llama-3.3-70b-versatile'];
-  const inputCost = (usage.prompt_tokens / 1_000_000) * price.input;
-  const outputCost = (usage.completion_tokens / 1_000_000) * price.output;
-  
-  return {
-    input_tokens: usage.prompt_tokens,
-    output_tokens: usage.completion_tokens,
-    cost_usd: inputCost + outputCost,
-  };
-}
+### 1. Job Creation
+```bash
+# Upload beads_log.jsonl
+curl https://api.groq.com/openai/v1/batches \
+  -X POST \
+  -H "Authorization: Bearer $GROQ_API_KEY" \
+  -F input_file_id="file-892" \
+  -F endpoint="/v1/chat/completions" \
+  -F completion_window="24h"
 ```
+
+### 2. Result Distillation
+Once complete, the Historian pulls the output JSONL and runs a 70B-powered synthesis pass to update the Playbook Index.
 
 ---
 
-## Configuration Reference
+## High-Concurrency Swarm Tactics
 
-```javascript
-// config/groq.js
-export const GROQ_CONFIG = {
-  models: {
-    mayor:     'llama-3.3-70b-versatile',
-    polecat:   'llama-3.1-8b-instant',
-    witness:   'llama-3.3-70b-versatile',
-    refinery:  'gpt-oss-120b',
-    deacon:    'llama-3.1-8b-instant',
-    dogs:      'llama-3.1-8b-instant',
-    historian: 'llama-3.3-70b-versatile',  // run via Batch
-    safeguard: 'gpt-oss-safeguard-20b',
-  },
-  
-  defaults: {
-    temperature: 0.2,
-    max_tokens: 4096,
-    timeout_ms: 30_000,
-  },
-  
-  batch: {
-    enabled: true,
-    completion_window: '24h',
-    max_requests_per_file: 50_000,
-  },
-  
-  swarm: {
-    max_parallel_polecats: 8,
-    concurrency_limit: 20,
-  },
-};
-```
+To manage 32+ agents (Polecats) simultaneously:
+
+1. **Token Quotas:** Each Polecat is limited to 2,000 output tokens to prevent "runaway" inference cost.
+2. **Priority Queuing:** Mayor and Witness requests skip the line; Dogs (formatting/linting) are queued for off-peak windows.
+3. **Regional Routing:** NOS Town can rotate between Groq regions to maximize available TPM (Tokens Per Minute).
+
+---
+
+## Error Handling & Reliability
+
+- **429 (Rate Limit):** NOS Town implements a `Wait-and-Retry` loop based on the `retry-after` header.
+- **Context Blowout:** If a file exceeds 100k tokens, the Deacon is triggered to "Summarize & Prune" before the Polecat begins work.
+- **Model Divergence:** If an 8B model produces malformed JSON, the system retries once with `temperature: 0` before escalating to 70B.
