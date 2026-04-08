@@ -90,6 +90,14 @@ NOS Town uses a "Preview-Primary" strategy, prioritizing Groq's latest high-perf
 
 ---
 
+## Production Hardening
+
+- [**HARDENING.md**](./docs/HARDENING.md) — Production hardening roadmap: resilience, data integrity, and transport security pillars.
+- [**RESILIENCE.md**](./docs/RESILIENCE.md) — Groq failover logic, local fallback (Ollama), convoy queueing, and state checkpointing.
+- [**KNOWLEDGE_GRAPH.md**](./docs/KNOWLEDGE_GRAPH.md) — MemPalace sync protocol, eventual consistency, and conflict resolution.
+- [**CONVOYS.md**](./docs/CONVOYS.md) — Convoy transport integrity: hash verification, replay attack prevention, and failure quarantine.
+
+
 ## License
 
 MIT © [kab0rn](https://github.com/kab0rn)
