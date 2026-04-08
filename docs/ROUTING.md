@@ -1,160 +1,105 @@
-# NOS Town Routing
+# NOS Town Routing — Intelligence & Cost Optimized
 
-Model routing table and council patterns for NOS Town.
+Model routing strategies and escalation patterns for the NOS Town multi-agent system.
 
 ---
 
 ## Overview
 
-NOS Town uses a heterogeneous routing strategy: tasks are assigned to different model tiers based on complexity, risk level, and cost sensitivity. The routing table is a living document — the Historian updates it nightly based on empirical Bead performance data.
+NOS Town employs a dynamic, data-driven routing architecture. Instead of a single frontier model, tasks are routed through an escalation ladder designed to minimize cost while maximizing output quality. The routing table is continuously refined by the **Historian** based on empirical Bead success rates.
 
 ---
 
 ## Routing Principles
 
-1. **Default cheap, escalate on failure.** Every Bead starts at the cheapest viable tier (B = 8B). If it fails tests twice, auto-promote to Tier A (70B).
-2. **Risk-proportionate judgment.** High-risk Beads (auth, payments, data deletion) skip Tier B and go directly to Tier A + Witness review.
-3. **Batch for latency-insensitive work.** Historian, offline evals, and background analysis always use Groq Batch for 50% cost savings.
-4. **Council for uncertainty.** Single-judge Witness confidence < 80% triggers a 3-judge council. Majority rules.
+1. **Efficiency First:** Default all non-critical Beads to Tier B (8B). Use Tier A (70B/120B) only when logic complexity warrants it.
+2. **Deterministic Escalation:** If an 8B model fails a task's internal unit tests twice, it is automatically promoted to 70B with the failed context attached.
+3. **Consensus for Criticality:** "High-Risk" tasks (Security, DB Schema, Core Auth) require a 3-judge Witness Council regardless of model performance.
+4. **Batch for Analysis:** Latency-insensitive tasks (Documentation, Log Analysis, Playbook Mining) must use Groq Batch API for 50% cost savings.
 
 ---
 
-## Routing Table
+## Routing Table (v1.2)
 
-| Bead Type | Default Model | Escalation Model | Safeguard | Witness Required |
-|-----------|--------------|-----------------|-----------|------------------|
-| Boilerplate code | llama-3.1-8b-instant | llama-3.3-70b-versatile | No | No |
-| Business logic | llama-3.3-70b-versatile | gpt-oss-120b | No | Yes |
-| Auth / security code | llama-3.3-70b-versatile | gpt-oss-120b | Yes | Yes (council) |
-| API design | llama-3.3-70b-versatile | gpt-oss-120b | No | Yes |
-| Tests | llama-3.1-8b-instant | llama-3.3-70b-versatile | No | No |
-| Documentation | llama-3.1-8b-instant | llama-3.3-70b-versatile | No | No |
-| Data migration | llama-3.3-70b-versatile | gpt-oss-120b | Yes | Yes (council) |
-| Linting/formatting | llama-3.1-8b-instant | — | No | No |
-| Architecture decisions | gpt-oss-120b | Council (3x 120B) | No | Yes (council) |
-| Offline eval / analysis | Batch (any model) | — | No | No |
+| Bead Category | Complexity | Default Model | Safeguard | Witness |
+|---------------|------------|---------------|-----------|---------|
+| **Boilerplate** | Low | llama-3.1-8b-instant | No | No |
+| **Business Logic**| Medium | llama-3.3-70b-versatile | Yes | Yes |
+| **Security/Auth** | High | llama-3.3-70b-versatile | Yes | **Council** |
+| **Architecture** | Critical | gpt-oss-120b | Yes | **Council** |
+| **Unit Tests** | Low | llama-3.1-8b-instant | No | Yes |
+| **Refactoring** | Medium | llama-3.3-70b-versatile | Yes | Yes |
+| **Documentation** | Low | Batch (llama-3.1-8b) | No | No |
 
 ---
 
-## Escalation Ladder
+## The Escalation Ladder
 
+NOS Town's "Fail-Promote" loop ensures quality without overspending on simple tasks.
+
+```mermaid
+graph TD
+    A[New Bead] --> B{Complexity?}
+    B -- Low --> C[llama-3.1-8b-instant]
+    B -- Med/High --> D[llama-3.3-70b-versatile]
+    C --> E{Tests Pass?}
+    E -- Yes --> F[Witness Check]
+    E -- No (Try 2) --> G[Promote to 70B]
+    G --> F
+    F -- Fail/Escalate --> H[Council: 3x 70B]
+    H -- Majority Pass --> I[Commit]
+    H -- Fail --> J[Mayor Review]
 ```
-Tier B (8B)  →  fail ×2  →  Tier A (70B)  →  fail ×1  →  Council (3× 70B)
-                                                        →  Mayor notified
-```
-
-### Escalation rules
-
-1. A Polecat (8B) runs the Bead.
-2. If the Bead's tests fail, retry once with temperature=0.
-3. If it fails a second time, escalate: re-run with 70B model.
-4. If the 70B model fails, summon a council of 3 × 70B instances. Majority output wins.
-5. If council fails, the Bead is marked BLOCKED and the Mayor is notified.
 
 ---
 
 ## Witness Council Protocol
 
-A **Witness Council** is invoked when:
-- A single Witness returns ESCALATE (confidence 60–79)
-- A Bead is tagged `high-risk`
-- The Mayor explicitly requests council review
+When a single Witness confidence score falls between **60–79**, or for any **High-Risk** Bead, a Council is summoned.
 
-### Council process
+### Council Configuration:
+- **Judges:** 3x `llama-3.3-70b-versatile` running in parallel.
+- **Aggregation:** Majority verdict (2/3 or 3/3).
+- **Latency:** < 5 seconds total (at Groq speed).
 
-```
-1. Spawn 3 Witness instances (all llama-3.3-70b-versatile or gpt-oss-120b)
-2. Each reviews the Bead independently
-3. Each returns: {verdict: PASS|FAIL, score: 0-100, reasoning: "..."}
-4. Aggregate: majority verdict wins
-5. If 2-1 split: include minority reasoning in Bead notes
-6. If 3-way tie (impossible with 3 judges): escalate to Mayor
-```
-
-### Council latency budget
-
-At Groq speeds (500+ tok/s), a 3-judge council for a 2000-token output completes in ~4 seconds total (parallel). This makes just-in-time councils economically viable.
-
----
-
-## A/B Routing
-
-NOS Town supports A/B routing to continuously evaluate new models.
-
-```yaml
-# routing_config.yaml
-ab_routing:
-  enabled: true
-  experimental_model: llama-3.4-70b  # candidate
-  baseline_model: llama-3.3-70b-versatile  # current default
-  split: 0.10  # 10% of Beads go to experimental
-  metrics:
-    - tests_passed_rate
-    - witness_approval_rate
-    - latency_p95
-  promote_threshold: 0.05  # experimental must beat baseline by 5%
-  evaluation_window: 500  # Beads
-```
-
-If the experimental model beats baseline across all metrics after 500 Beads, the Historian auto-promotes it to the default routing table.
-
----
-
-## Continuous Background Evals
-
-Every night, the Historian re-runs a random sample of the last 1000 completed Beads against the current default models via Groq Batch. This detects:
-
-- **Model regressions:** A new model version underperforms vs. the old one
-- **Prompt drift:** Prompts that worked 30 days ago now fail
-- **Task distribution shift:** New Bead types that the routing table doesn't handle well
-
-Results are written to `playbooks/eval_report_{date}.md` and surfaced to the Mayor on next startup.
-
----
-
-## Cost Routing
-
-Cost estimates per 1M tokens (approximate, 2025):
-
-| Model | Input | Output | Use when |
-|-------|-------|--------|----------|
-| llama-3.1-8b-instant | $0.05 | $0.08 | Default for all Tier B work |
-| llama-3.3-70b-versatile | $0.59 | $0.79 | Mayor, Witness, Refinery, complex Beads |
-| gpt-oss-120b | $0.90 | $1.20 | Architecture, council, max quality |
-| gpt-oss-safeguard-20b | $0.20 | $0.20 | All security checks |
-| Groq Batch (any) | 50% off | 50% off | Historian, offline evals |
-
-### Cost optimization rules
-
-1. Never use 70B for linting, formatting, or boilerplate.
-2. Always use Batch for work that can tolerate a 1–8 hour turnaround.
-3. Set `max_tokens` tightly per Bead type to prevent runaway outputs.
-4. Cache Witness verdicts for identical (hash-matched) outputs.
-
----
-
-## Dynamic Routing Updates
-
-The routing table is stored in `config/routing_table.json` and versioned in git. The Historian is the only role authorized to propose routing table updates (via PR). Updates require Mayor approval before taking effect.
-
-```json
-{
-  "version": "1.0.0",
-  "updated_at": "2025-01-01",
-  "updated_by": "historian",
-  "routes": {
-    "boilerplate": {
-      "default": "llama-3.1-8b-instant",
-      "escalation": "llama-3.3-70b-versatile",
-      "safeguard": false,
-      "witness": false
-    },
-    "auth": {
-      "default": "llama-3.3-70b-versatile",
-      "escalation": "gpt-oss-120b",
-      "safeguard": true,
-      "witness": "council"
-    }
-  }
+### Evaluation Metric:
+docs: Enhance ROUTING.md with escalation ladder and cost-to-quality matrix{
+docs: Enhance ROUTING.md with escalation ladder and cost-to-quality matrix  "judges": ["judge_1", "judge_2", "judge_3"],
+  "decision_logic": "weighted_average_score"
 }
 ```
+
+---
+
+## A/B Routing Config
+
+To maintain frontier quality, 10% of traffic is routed to experimental models.
+
+```yaml
+# routing/ab_test.yaml
+ab_tests:
+  active: true
+  experiment:
+    model: "llama-3.4-70b-preview"
+    weight: 0.10
+  baseline:
+    model: "llama-3.3-70b-versatile"
+    weight: 0.90
+  success_criteria:
+    - witness_pass_rate > 0.95
+    - avg_witness_score > 88
+    - p95_latency < 1500ms
+```
+
+---
+
+## Cost-to-Quality Matrix
+
+Optimizing for the "Efficiency Frontier":
+
+| Tier | Model | Input (1M) | Output (1M) | Best Quality/Cost Tradeoff |
+|------|-------|------------|-------------|----------------------------|
+| **B** | 8B | $0.05 | $0.08 | Repetitive boilerplate, unit tests |
+| **A** | 70B | $0.59 | $0.79 | Synthesis, logical reasoning |
+| **S** | 120B | $0.90 | $1.20 | Final review, complex refactors |
+| **Batch** | Any | -50% | -50% | Historian, background formatting |
