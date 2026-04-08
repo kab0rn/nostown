@@ -299,6 +299,150 @@ nos historian status                 # Check Playbook builder
 
 ---
 
+## Model Selection Philosophy: Optimizing for Quality on Groq
+
+NOS Town's model selection strategy is built around a fundamental insight: **Groq's speed advantage changes the economics of quality**. When inference is 5–10× faster and tokens cost 10–100× less than frontier proprietary models, strategies that were previously too expensive become not just viable, but optimal.
+
+### The Speed-Quality Trade-off Inversion
+
+Traditional LLM systems face a hard trade-off:
+- **Frontier models** (GPT-4, Claude Opus) → high quality, slow, expensive
+- **Small models** (Llama-8B, Mistral-7B) → fast, cheap, lower quality
+
+Groq inverts this by making open models so fast that you can run multiple quality-enhancing strategies in the time a single frontier call would take:
+- **N-way self-consistency**: Run 3–5 variants, pick best → still faster than 1 Claude call
+- **Model councils**: 2–3 judges debate → cost of 1 proprietary inference
+- **Iterative refinement**: fail → retry with better context → still sub-second
+
+This creates a new optimal point: **open models + swarm strategies > single frontier model**, when wall-clock time and cost are constraints.
+
+### Role-by-Role Model Selection Rationale
+
+#### Mayor: `llama-3.3-70b-versatile` (default), `openai/gpt-oss-120b` (escalate)
+
+**Why 70B for most planning:**
+- Mayor doesn't code; it decomposes specs and routes work. This is primarily a reasoning task, not a code-generation task.
+- 70B models hit the "good enough" threshold for planning on well-scoped problems — they understand project structure, can break work into sensible Beads, and route appropriately.
+- Groq serves 70B at ~250–300 tok/s, fast enough that Mayor feels interactive even on complex plans.
+
+**When to escalate to 120B:**
+- Ambiguous specs where the decomposition itself is unclear ("make the auth system better")
+- Large architectural changes touching many subsystems
+- When Mayor has failed to produce a working plan twice with 70B
+
+**Philosophy:** Mayor is your highest-leverage role — bad plans waste the entire swarm. But over-provisioning Mayor (always using 120B) wastes money on routine work. Use 70B as default, let Mayor request 120B when it detects ambiguity.
+
+#### Crew: `llama-3.3-70b-versatile` (default), `openai/gpt-oss-120b` (design spikes)
+
+**Why 70B for design work:**
+- Crew writes specs and architecture docs, not production code. Specs are forgiving — slight imprecision gets caught by Witness later.
+- Crew has access to Playbooks (Historian output), so it's not designing from scratch; it's adapting known patterns.
+- Long design sessions benefit from Groq's speed: Crew can iterate on a design doc 5–10 times in a single session without the user noticing latency.
+
+**When to use 120B:**
+- Greenfield design (no Playbook precedent)
+- Protocol design, data model changes, or other high-stakes architecture where mistakes are expensive
+
+**Philosophy:** Crew is a design partner, not a code executor. Optimize for iteration speed and cost, not perfect-first-draft quality. The review cycle (via Mayor and Witness) will catch design flaws.
+
+#### Polecats: `llama-3.1-8b-instant` (standard), `llama-3.3-70b-versatile` (boosted)
+
+**Why 8B for most coding:**
+- The majority of Beads are well-scoped: "add this endpoint", "fix this bug", "write tests for X". These don't need frontier reasoning.
+- 8B models are surprisingly good at code generation when the spec is clear and the scope is narrow (which your tooling enforces).
+- At ~500–600 tok/s, 8B Polecats can generate, test, and iterate on a patch faster than a human can read the diff.
+- **Key insight:** Your quality comes from the test harness and Witness review, not from the Polecat's raw output. 8B + good tests > 70B + no tests.
+
+**When to boost to 70B (Power mode):**
+- After N failed attempts on the same Bead (8B is stuck)
+- Complex refactors touching >5 files
+- Beads explicitly marked `complexity=high` by Mayor
+
+**Self-consistent mode (N× 8B → Arbiter picks best):**
+- Ambiguous specs where even humans would generate varied solutions
+- Critical path code (auth, payments, data integrity)
+- When you care more about correctness than speed
+
+**Philosophy:** Polecats are bulk executors. Run them on the cheapest model that reliably passes tests. Boost selectively when 8B fails, not preemptively. The savings from running 80% of Beads on 8B fund the 20% that need 70B.
+
+####  Witness: `llama-3.3-70b-versatile` (default), council for high-risk
+
+**Why 70B for judgment:**
+- Witness compares spec vs diff vs tests. This is a reading comprehension and logical reasoning task — 70B is well-suited.
+- Witness doesn't generate code, so you're not limited by 8B's weaker code synthesis. You only need it to spot mismatches.
+- 70B is fast enough (~250 tok/s) that Witness review adds <2s to each Bead's cycle time.
+
+**When to run a council (70B + 120B judges):**
+- High-risk Beads (security, payments, data migrations)
+- Diffs that look correct but Witness is uncertain (low confidence score)
+- After a Bead has been verified and later caused a regression (Witness missed something)
+
+**Philosophy:** Witness is your last automated quality gate before merge. Optimize for precision (don't let bad code through) over recall (false positives are cheaper than production bugs). Use councils sparingly, but don't skimp on them for critical code.
+
+#### Refinery: `llama-3.3-70b-versatile` (default), `llama-3.1-8b-instant` (fast-path)
+
+**Why 70B for complex merges:**
+- Refinery has to reason about cross-Bead interactions: "If Bead A and Bead B both modified `auth.go`, will they conflict?"
+- This is a planning + conflict detection task, which 70B handles well.
+- Refinery runs infrequently (only when Beads complete), so cost is low even with 70B.
+
+**When to use 8B fast-path:**
+- Non-overlapping Beads (disjoint file scopes)
+- Trivial merges (docs, tests, config)
+
+**Philosophy:** Refinery failures are expensive (broken main branch, blocked team). Optimize for correctness, not speed. Use 70B unless the merge is provably trivial.
+
+#### Deacon: `llama-3.1-8b-instant` (default), `llama-3.3-70b-versatile` (escalate)
+
+**Why 8B for monitoring:**
+- Deacon reads structured metrics (heartbeats, durations, failure counts) and classifies anomalies. This is pattern matching, not deep reasoning.
+- Deacon runs continuously (every few minutes). Cost matters.
+- 8B is fast enough that Deacon's patrol loop completes in <1s, keeping monitoring real-time.
+
+**When to escalate to 70B:**
+- Complex incident diagnosis ("Why is this rig stuck?")
+- Deciding whether to restart a worker or escalate to Mayor
+
+**Philosophy:** Deacon is ops, not strategy. Keep it cheap and fast. Escalate to 70B only when simple heuristics fail.
+
+#### Dogs: `llama-3.1-8b-instant`
+
+**Why always 8B:**
+- Dogs run maintenance scripts (log rotation, Bead compaction, watchdogs). These are deterministic tasks with clear specs.
+- No reasoning required; 8B is overkill, but it's the smallest model Groq offers that's still reliable.
+
+**Philosophy:** Dogs are automated chores. Use the absolute cheapest model that won't fail.
+
+#### Safeguard Sentry: `openai/gpt-oss-safeguard-20b`
+
+**Why a specialized safety model:**
+- Safeguard-20B is purpose-built for policy classification (security, PII, harmful content). It's better at this than general-purpose models.
+- At 20B params, it's faster than 70B but more accurate than 8B for safety tasks.
+- Groq serves it at >1000 tok/s, so you can run it on every diff without noticing latency.
+
+**Philosophy:** Safety is non-negotiable and cheap on Groq. Run Safeguard on every change.
+
+#### Historian: `llama-3.3-70b-versatile` via Groq Batch
+
+**Why 70B for Playbook mining:**
+- Historian synthesizes patterns from thousands of Beads. This requires strong reading comprehension and abstraction.
+- It runs async overnight via Batch (50% discount), so cost is manageable even with 70B.
+
+**Philosophy:** Historian is your institutional memory. Invest in quality here; bad Playbooks propagate to all future work.
+
+### Exploiting Groq's Speed for Quality
+
+The above selections are starting points. Groq's speed lets you layer additional quality strategies:
+
+1. **Automatic escalation ladders**: Start every Bead on 8B. If it fails tests twice, auto-promote to 70B Power mode. If 70B fails, request council.
+2. **Continuous background evals**: Use Groq Batch overnight to re-run old Beads with new models. If a newer model (e.g., Llama 3.4) consistently beats your current default, auto-update the routing table.
+3. **A/B routing**: Route 10% of Beads to an experimental model. Track quality metrics (tests passed, Witness approval rate). If experimental beats default, promote it.
+4. **Just-in-time councils**: When Witness is uncertain (confidence <80%), auto-spawn a second 120B judge on-the-fly. Total latency: still <5s.
+
+None of these are viable on slow, expensive inference. Groq makes them routine.
+
+---
+
 ## Model Tiers
 
 | Tier | Models | Use Cases | Cost |
