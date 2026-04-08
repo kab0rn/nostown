@@ -35,8 +35,8 @@ NOS Town is a spiritual reimagining of [Gas Town](https://github.com/gastownhall
 ```text
 NOS Town Workspace ~/nos/
 │
-├── The Mayor (groq/compound)        ← Agentic orchestrator and planner
-│   ├── Palace wake-up (L0+L1)        ← ~170 tokens — replaces .hook reads
+├── The Mayor (groq/compound)          ← Agentic orchestrator and planner
+│   ├── Palace wake-up (L0+L1)         ← ~170 tokens — replaces .hook reads
 │   ├── Playbook search (hall_advice)  ← Before any Bead decomposition
 │   ├── KG query (team + open rooms)   ← Temporal knowledge graph
 │   └── Model routing table            ← KG-backed, live triples
@@ -48,20 +48,22 @@ NOS Town Workspace ~/nos/
 │   ├── Polecats (Llama 3.1 8B)        ← Ephemeral execution + discovery logging
 │   └── Mailboxes                      ← Inter-agent message bus → hall_events
 │
-├── The Historian (Batch)             ← Nightly institutional memory mining
+├── The Historian (Batch)              ← Nightly institutional memory mining
 │   ├── mempalace mine (Beads)         ← Auto-classifies into halls
 │   ├── hall_advice/                   ← Semantically searchable Playbooks
 │   └── KG triples                     ← Model routing locks + demotions
 │
-├── MemPalace MCP Server (:7474)      ← 19-tool palace interface for all agents
+├── MemPalace MCP Server (:7474)       ← 19-tool palace interface for all agents
 │   ├── Wings → Rooms → Halls          ← Hierarchical namespace per Rig + role
 │   ├── Closets (summaries)            ← Semantic search targets
 │   ├── Drawers (verbatim Beads)       ← Permanent, never summarized
 │   ├── Knowledge Graph                ← Temporal SQLite triple store
 │   └── Tunnels                        ← Cross-Rig shared room connections
 │
-└── Safeguard (gpt-oss-20b)           ← Real-time security sentry + vuln memory
+└── Safeguard (openai/gpt-oss-20b)    ← Real-time security sentry + vuln memory
 ```
+
+> **Language boundary:** NOS Town agents are orchestrated in Node.js/TypeScript. The MemPalace MCP server (`mempalace` Python package) runs as a sidecar process on `:7474` and is called over the MCP protocol — not imported directly. See [BUILDING.md](docs/BUILDING.md) for integration details.
 
 ---
 
@@ -69,34 +71,36 @@ NOS Town Workspace ~/nos/
 
 NOS Town uses a "Preview-Primary" strategy, prioritizing Groq's latest high-performance preview models while maintaining stable production fallbacks.
 
+> **Note on preview models:** `meta-llama/llama-4-scout-17b-16e-instruct` and `qwen/qwen3-32b` are Groq preview models — not recommended for production without a fallback. The stable fallbacks in this table are production-grade.
+
 | Role | Primary Model (Preview/System) | Stable Fallback (Production) |
 |---|---|---|
 | **Mayor** | `groq/compound` | `llama-3.3-70b-versatile` |
-| **Polecat** | `meta-llama/llama-4-scout-17b` | `llama-3.1-8b-instant` |
+| **Polecat** | `meta-llama/llama-4-scout-17b-16e-instruct` | `llama-3.1-8b-instant` |
 | **Witness** | `qwen/qwen3-32b` | `llama-3.3-70b-versatile` |
 | **Refinery** | `openai/gpt-oss-120b` | `llama-3.3-70b-versatile` |
-| **Safeguard** | `openai/gpt-oss-safeguard-20b` | `llama-3.1-8b-instant` |
+| **Safeguard** | `openai/gpt-oss-safeguard-20b` | `openai/gpt-oss-20b` |
 
 ---
 
 ## Documentation
 
-- [**MEMPALACE.md**](./docs/MEMPALACE.md) — **Start here for memory.** Palace hierarchy, KG schema, AAAK compression, MCP tool reference, and setup.
-- [**ROLES.md**](./docs/ROLES.md) — Role-by-role quality tuning, palace-first prompts, and agentic protocols.
-- [**ROUTING.md**](./docs/ROUTING.md) — The escalation ladder, Playbook short-circuit, KG-backed routing evolution, cross-rig tunnels.
-- [**HISTORIAN.md**](./docs/HISTORIAN.md) — MemPalace mining pipeline, Playbook generation, AAAK Bead manifest compression.
-- [**FORK_STRATEGY.md**](./docs/FORK_STRATEGY.md) — Relationship to upstream Gas Town: what we sync, what we diverge, MemPalace as a NOS Town-only layer.
-- [**GROQ_INTEGRATION.md**](./docs/GROQ_INTEGRATION.md) — SDK setup, Batch API, and performance matrix.
-
----
+- [**BUILDING.md**](docs/BUILDING.md) — **Start here to build.** Gas Town extension points, CLI integration spec, Python/Go-to-Node.js boundary, and end-to-end setup walkthrough.
+- [**MEMPALACE.md**](docs/MEMPALACE.md) — **Start here for memory.** Palace hierarchy, KG schema, AAAK compression, MCP tool reference, and setup.
+- [**ROLES.md**](docs/ROLES.md) — Role-by-role quality tuning, palace-first prompts, and agentic protocols.
+- [**ROUTING.md**](docs/ROUTING.md) — The escalation ladder, Playbook short-circuit, KG-backed routing evolution, cross-rig tunnels.
+- [**HISTORIAN.md**](docs/HISTORIAN.md) — MemPalace mining pipeline, Playbook generation, AAAK Bead manifest compression.
+- [**FORK_STRATEGY.md**](docs/FORK_STRATEGY.md) — Relationship to upstream Gas Town: what we sync, what we diverge, MemPalace as a NOS Town-only layer.
+- [**GROQ_INTEGRATION.md**](docs/GROQ_INTEGRATION.md) — SDK setup, Batch API, and performance matrix.
 
 ## Production Hardening
 
-- [**HARDENING.md**](./docs/HARDENING.md) — Production hardening roadmap: resilience, data integrity, and transport security pillars.
-- [**RESILIENCE.md**](./docs/RESILIENCE.md) — Groq failover logic, local fallback (Ollama), convoy queueing, and state checkpointing.
-- [**KNOWLEDGE_GRAPH.md**](./docs/KNOWLEDGE_GRAPH.md) — MemPalace sync protocol, eventual consistency, and conflict resolution.
-- [**CONVOYS.md**](./docs/CONVOYS.md) — Convoy transport integrity: hash verification, replay attack prevention, and failure quarantine.
+- [**HARDENING.md**](docs/HARDENING.md) — Production hardening roadmap: resilience, data integrity, and transport security pillars.
+- [**RESILIENCE.md**](docs/RESILIENCE.md) — Groq failover logic, local fallback (Ollama), convoy queueing, and state checkpointing.
+- [**KNOWLEDGE_GRAPH.md**](docs/KNOWLEDGE_GRAPH.md) — MemPalace sync protocol, eventual consistency, and conflict resolution.
+- [**CONVOYS.md**](docs/CONVOYS.md) — Convoy transport integrity: hash verification, replay attack prevention, and failure quarantine.
 
+---
 
 ## License
 
