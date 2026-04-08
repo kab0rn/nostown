@@ -1,4 +1,4 @@
-# NOS Town Groq Integration — Performance Engine
+# NOS Town Groq Integration — Performance Engine 
 
 Groq API configuration, Batch processing, and model selection for the NOS Town multi-agent system.
 
