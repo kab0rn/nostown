@@ -1,6 +1,6 @@
-# NOS Town Routing — Intelligence & Cost Optimized
+# NOS Town Routing - Intelligence & Cost Optimized
 
-Model routing strategies and escalation patterns for the NOS Town multi-agent system.
+Model routing strategies and escalation patterns for the NOS Town multi-agent system, featuring the Preview-Primary escalation protocol.
 
 ---
 
@@ -10,26 +10,26 @@ NOS Town employs a dynamic, data-driven routing architecture. Instead of a singl
 
 ---
 
-## Routing Principles
+## Preview-Primary Escalation
 
-1. **Efficiency First:** Default all non-critical Beads to Tier B (8B). Use Tier A (70B/120B) only when logic complexity warrants it.
-2. **Deterministic Escalation:** If an 8B model fails a task's internal unit tests twice, it is automatically promoted to 70B with the failed context attached.
-3. **Consensus for Criticality:** "High-Risk" tasks (Security, DB Schema, Core Auth) require a 3-judge Witness Council regardless of model performance.
-4. **Batch for Analysis:** Latency-insensitive tasks (Documentation, Log Analysis, Playbook Mining) must use Groq Batch API for 50% cost savings.
+To leverage high-performance preview models safely, NOS Town implements a "Stabilized Escalation" pattern:
+1. **Target Preview:** Attempt the task with the high-speed/high-capability Preview model first (e.g., Llama 4 Scout).
+2. **Deterministic Validation:** Run unit tests and a Safeguard scan.
+3. **Automatic Fallback:** If validation fails or the Preview API returns a 503/429, the system automatically hot-swaps to the Stable Fallback model (e.g., Llama 3.3 70B) for the retry.
 
 ---
 
-## Routing Table (v1.2)
+## Routing Table (v2.0)
 
-| Bead Category | Complexity | Default Model | Safeguard | Witness |
-|---------------|------------|---------------|-----------|---------|
-| **Boilerplate** | Low | llama-3.1-8b-instant | No | No |
-| **Business Logic**| Medium | llama-3.3-70b-versatile | Yes | Yes |
-| **Security/Auth** | High | llama-3.3-70b-versatile | Yes | **Council** |
-| **Architecture** | Critical | gpt-oss-120b | Yes | **Council** |
-| **Unit Tests** | Low | llama-3.1-8b-instant | No | Yes |
-| **Refactoring** | Medium | llama-3.3-70b-versatile | Yes | Yes |
-| **Documentation** | Low | Batch (llama-3.1-8b) | No | No |
+| Bead Category | Complexity | Primary Model (Preview) | Stable Fallback | Safeguard | Witness |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Boilerplate** | Low | `llama-3.1-8b-instant` | N/A | No | No |
+| **Logic/Feature** | Medium | `llama-4-scout-17b` | `llama-3.1-8b-instant` | Yes | Yes |
+| **Security/Auth** | High | `qwen3-32b` | `llama-3.3-70b-versatile` | Yes | **Council** |
+| **Architecture** | Critical | `gpt-oss-120b` | `llama-3.3-70b-versatile` | Yes | **Council** |
+| **Unit Tests** | Low | `llama-3.1-8b-instant` | N/A | No | Yes |
+| **Refactoring** | Medium | `llama-4-scout-17b` | `llama-3.1-8b-instant` | Yes | Yes |
+| **Documentation** | Low | `Batch (llama-3.1-8b)` | N/A | No | No |
 
 ---
 
@@ -41,65 +41,12 @@ NOS Town's "Fail-Promote" loop ensures quality without overspending on simple ta
 graph TD
     A[New Bead] --> B{Complexity?}
     B -- Low --> C[llama-3.1-8b-instant]
-    B -- Med/High --> D[llama-3.3-70b-versatile]
+    B -- Med/High --> D[llama-4-scout-17b]
     C --> E{Tests Pass?}
+    D --> E
     E -- Yes --> F[Witness Check]
-    E -- No (Try 2) --> G[Promote to 70B]
+    E -- No (Try 2) --> G[Promote to 70B Stable]
     G --> F
-    F -- Fail/Escalate --> H[Council: 3x 70B]
-    H -- Majority Pass --> I[Commit]
-    H -- Fail --> J[Mayor Review]
+    F -- Pass --> H[Merge]
+    F -- Fail --> I[Escalate to Council: 120B]
 ```
-
----
-
-## Witness Council Protocol
-
-When a single Witness confidence score falls between **60–79**, or for any **High-Risk** Bead, a Council is summoned.
-
-### Council Configuration:
-- **Judges:** 3x `llama-3.3-70b-versatile` running in parallel.
-- **Aggregation:** Majority verdict (2/3 or 3/3).
-- **Latency:** < 5 seconds total (at Groq speed).
-
-### Evaluation Metric:
-docs: Enhance ROUTING.md with escalation ladder and cost-to-quality matrix{
-docs: Enhance ROUTING.md with escalation ladder and cost-to-quality matrix  "judges": ["judge_1", "judge_2", "judge_3"],
-  "decision_logic": "weighted_average_score"
-}
-```
-
----
-
-## A/B Routing Config
-
-To maintain frontier quality, 10% of traffic is routed to experimental models.
-
-```yaml
-# routing/ab_test.yaml
-ab_tests:
-  active: true
-  experiment:
-    model: "llama-3.4-70b-preview"
-    weight: 0.10
-  baseline:
-    model: "llama-3.3-70b-versatile"
-    weight: 0.90
-  success_criteria:
-    - witness_pass_rate > 0.95
-    - avg_witness_score > 88
-    - p95_latency < 1500ms
-```
-
----
-
-## Cost-to-Quality Matrix
-
-Optimizing for the "Efficiency Frontier":
-
-| Tier | Model | Input (1M) | Output (1M) | Best Quality/Cost Tradeoff |
-|------|-------|------------|-------------|----------------------------|
-| **B** | 8B | $0.05 | $0.08 | Repetitive boilerplate, unit tests |
-| **A** | 70B | $0.59 | $0.79 | Synthesis, logical reasoning |
-| **S** | 120B | $0.90 | $1.20 | Final review, complex refactors |
-| **Batch** | Any | -50% | -50% | Historian, background formatting |
