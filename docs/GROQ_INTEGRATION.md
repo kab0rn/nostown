@@ -13,11 +13,11 @@ NOS Town is built to exploit the **sub-second inference** and **extreme throughp
 ## The Groq Advantage
 
 | Feature | Groq (NOS Town) | Conventional API | System Impact |
-|---------|-----------------|-----------------|---------------|
+|---|---|---|---|
 | **Latency** | ~250ms (T-TFT) | 1.5s - 3s | Enables 3-judge councils in < 5s |
 | **Throughput** | 500+ tok/s | 50-80 tok/s | Rapid 8B/70B context ingestion |
-| **Concurrently**| 100+ streams | 5-10 streams | Massive 32+ agent swarms |
-| **Batch Cost**  | 50% Discount | 10-20% | Cheap nightly "Historian" runs |
+| **Concurrency** | 100+ streams | 5-10 streams | Massive 32+ agent swarms |
+| **Batch Cost** | 50% Discount | 10-20% | Cheap nightly "Historian" runs |
 
 ---
 
@@ -33,12 +33,11 @@ const groq = new Groq({
 });
 
 /**
- * Standard request with exponential backoff and 
+ * Standard request with exponential backoff and
  * automatic model escalation on 429/500 errors.
  */
 export async function executeInference(params) {
   const { model, messages, temperature = 0.1 } = params;
-  
   try {
     return await groq.chat.completions.create({
       model,
@@ -57,14 +56,20 @@ export async function executeInference(params) {
 
 ## Model Selection Matrix
 
-Surgical model selection is core to NOS Town's cost-efficiency.
+Surgical model selection is core to NOS Town's cost-efficiency. All context windows are 131,072 tokens unless noted.
 
-| Tier | Model ID | Primary Use | Context Window |
-|------|----------|-------------|----------------|
-| **A** | `llama-3.3-70b-versatile` | Mayor, Witness, Complex Logic | 128k |
-| **B** | `llama-3.1-8b-instant` | Polecat Swarms, Deacon, Dogs | 128k |
-| **S** | `gpt-oss-120b` | Refinery, Critical Architecture | 128k |
-| **G** | `gpt-oss-safeguard-20b` | Security/Policy Enforcement | 32k |
+> **Preview vs Production:** Tier S+ models (`meta-llama/llama-4-scout-17b-16e-instruct`, `qwen/qwen3-32b`, `openai/gpt-oss-safeguard-20b`) are Groq **preview** models and may be discontinued with short notice. Always configure a production fallback.
+
+| Tier | Model ID | Primary Use | Context Window | Max Output | Speed |
+|---|---|---|---|---|---|
+| **A** | `llama-3.3-70b-versatile` | Mayor fallback, Witness fallback, Complex Logic | 131k | 32,768 | 280 t/s |
+| **B** | `llama-3.1-8b-instant` | Polecat fallback, Deacon, Dogs | 131k | 131,072 | 560 t/s |
+| **S** | `openai/gpt-oss-120b` | Refinery, Critical Architecture | 131k | 65,536 | 500 t/s |
+| **S+** | `meta-llama/llama-4-scout-17b-16e-instruct` | Polecat primary, Crew traversal | 131k | 8,192 | 750 t/s |
+| **S+** | `qwen/qwen3-32b` | Witness primary, Consensus councils | 131k | 40,960 | 400 t/s |
+| **G** | `openai/gpt-oss-safeguard-20b` | Security/Policy Enforcement (Safeguard) | 131k | 65,536 | 1000 t/s |
+| **G-** | `openai/gpt-oss-20b` | Safeguard fallback | 131k | 65,536 | 1000 t/s |
+| **SYS** | `groq/compound` | Mayor primary, Agentic orchestration | 131k | 8,192 | ~450 t/s |
 
 ---
 
@@ -73,6 +78,7 @@ Surgical model selection is core to NOS Town's cost-efficiency.
 The **Historian** uses the Batch API to process thousands of Beads for pattern mining at half the retail cost.
 
 ### 1. Job Creation
+
 ```bash
 # Upload beads_log.jsonl
 curl https://api.groq.com/openai/v1/batches \
@@ -84,6 +90,7 @@ curl https://api.groq.com/openai/v1/batches \
 ```
 
 ### 2. Result Distillation
+
 Once complete, the Historian pulls the output JSONL and runs a 70B-powered synthesis pass to update the Playbook Index.
 
 ---
@@ -103,3 +110,4 @@ To manage 32+ agents (Polecats) simultaneously:
 - **429 (Rate Limit):** NOS Town implements a `Wait-and-Retry` loop based on the `retry-after` header.
 - **Context Blowout:** If a file exceeds 100k tokens, the Deacon is triggered to "Summarize & Prune" before the Polecat begins work.
 - **Model Divergence:** If an 8B model produces malformed JSON, the system retries once with `temperature: 0` before escalating to 70B.
+- **Preview Model Deprecation:** If a preview model returns a `model_not_found` error, the escalation ladder automatically falls back to the Tier A/B production equivalent. See RESILIENCE.md for full failover logic.
