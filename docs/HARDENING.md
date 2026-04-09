@@ -21,21 +21,21 @@ Every inference call MUST go through `src/groq/provider.ts` — never call `groq
 export interface InferenceParams {
   role: 'mayor' | 'polecat' | 'witness' | 'refinery' | 'safeguard' | 'historian';
   messages: ChatMessage[];
-  temperature?: number;       // default: 0.1
-  maxTokens?: number;         // default: role-specific (see table below)
-  forceModel?: string;        // override routing (Mayor use only)
-  rigName?: string;           // for KG routing lookup
-  taskType?: string;          // for Playbook short-circuit check
+  temperature?: number; // default: 0.1
+  maxTokens?: number; // default: role-specific (see table below)
+  forceModel?: string; // override routing (Mayor use only)
+  rigName?: string; // for KG routing lookup
+  taskType?: string; // for Playbook short-circuit check
 }
 
 // Role-default token limits (hard caps to prevent runaway cost)
 const ROLE_TOKEN_LIMITS: Record<string, number> = {
-  mayor:     4096,
-  polecat:   2000,   // hard cap — see GROQ_INTEGRATION.md
-  witness:   2048,
-  refinery:  8192,
+  mayor: 4096,
+  polecat: 2000, // hard cap — see GROQ_INTEGRATION.md
+  witness: 2048,
+  refinery: 8192,
   safeguard: 1024,
-  historian: 4096,   // batch mode, cost controlled separately
+  historian: 4096, // batch mode, cost controlled separately
 };
 ```
 
@@ -51,13 +51,13 @@ Every agent role MUST checkpoint its state to MemPalace before any operation tha
 ```typescript
 // Required checkpoint shape written to hall_events:
 interface AgentCheckpoint {
-  agent_id: string;       // e.g. "polecat-7f3b"
+  agent_id: string; // e.g. "polecat-7f3b"
   role: string;
   bead_id: string;
-  step: string;           // e.g. "modifying_file", "writing_tests"
+  step: string; // e.g. "modifying_file", "writing_tests"
   status: 'in_progress' | 'done' | 'blocked' | 'failed';
-  timestamp: string;      // ISO 8601
-  context_ref?: string;   // MemPalace drawer ID if relevant context saved
+  timestamp: string; // ISO 8601
+  context_ref?: string; // MemPalace drawer ID if relevant context saved
 }
 ```
 
@@ -157,36 +157,6 @@ All Convoy payloads containing code diffs or shell command strings MUST pass thr
 
 ---
 
-## Hardening Checklist (Implementation Gate)
-
-Before NOS Town v1.0 ships, all of the following MUST have passing tests:
-
-| # | Check | Test File | Status |
-|---|---|---|---|
-| 1 | Provider falls back on 429 without data loss | `tests/integration/provider-failover.test.ts` | TODO |
-| 2 | Provider falls back on model_not_found | `tests/integration/provider-failover.test.ts` | TODO |
-| 3 | Ledger append is atomic under concurrent writes | `tests/integration/ledger-concurrency.test.ts` | TODO |
-| 4 | Checksum validation rejects corrupt Beads | `tests/unit/ledger-checksum.test.ts` | TODO |
-| 5 | Convoy signature mismatch quarantines message | `tests/unit/convoy-sign.test.ts` | TODO |
-| 6 | Replay attack rejected by seq validation | `tests/unit/convoy-replay.test.ts` | TODO |
-| 7 | Stalled Polecat triggers POLECAT_STALLED event | `tests/integration/heartbeat-stall.test.ts` | TODO |
-| 8 | Mayor checkpoints plan before dispatch | `tests/unit/mayor-checkpoint.test.ts` | TODO |
-| 9 | MemPalace backfill catches missing Drawers | `tests/integration/historian-backfill.test.ts` | TODO |
-| 10 | KG MIM resolves conflicts correctly | `tests/unit/kg-mim.test.ts` | TODO |
-
----
-
-## See Also
-
-- [RESILIENCE.md](./RESILIENCE.md) — Full Groq failover logic, Ollama fallback, convoy queueing
-- [CONVOYS.md](./CONVOYS.md) — Convoy schema, signing, replay prevention, failure quarantine
-- [KNOWLEDGE_GRAPH.md](./KNOWLEDGE_GRAPH.md) — KG sync protocol, MIM conflict resolution, consistency model
-- [HOOK_SCHEMA.md](./HOOK_SCHEMA.md) — Gas Town Bead and Hook wire format reference
-- [GROQ_INTEGRATION.md](./GROQ_INTEGRATION.md) — SDK setup, rate limit handling, error codes
-
-
----
-
 ## Pillar 4: The Safeguard Sentry (Real-time Security)
 
 To prevent agents from introducing vulnerabilities or leaking sensitive data, the **Safeguard** role (`openai/gpt-oss-safeguard-20b`) acts as a mandatory middleware for all file writes and external API calls.
@@ -221,7 +191,31 @@ The Safeguard maintains a dedicated MemPalace Wing (`wing_safeguard`) containing
 
 ---
 
+## Hardening Checklist (Implementation Gate)
+
+Before NOS Town v1.0 ships, all of the following MUST have passing tests:
+
+| # | Check | Test File | Status |
+|---|---|---|---|
+| 1 | Provider falls back on 429 without data loss | `tests/integration/provider-failover.test.ts` | TODO |
+| 2 | Provider falls back on model_not_found | `tests/integration/provider-failover.test.ts` | TODO |
+| 3 | Ledger append is atomic under concurrent writes | `tests/integration/ledger-concurrency.test.ts` | TODO |
+| 4 | Checksum validation rejects corrupt Beads | `tests/unit/ledger-checksum.test.ts` | TODO |
+| 5 | Convoy signature mismatch quarantines message | `tests/unit/convoy-sign.test.ts` | TODO |
+| 6 | Replay attack rejected by seq validation | `tests/unit/convoy-replay.test.ts` | TODO |
+| 7 | Stalled Polecat triggers POLECAT_STALLED event | `tests/integration/heartbeat-stall.test.ts` | TODO |
+| 8 | Mayor checkpoints plan before dispatch | `tests/unit/mayor-checkpoint.test.ts` | TODO |
+| 9 | MemPalace backfill catches missing Drawers | `tests/integration/historian-backfill.test.ts` | TODO |
+| 10 | KG MIM resolves conflicts correctly | `tests/unit/kg-mim.test.ts` | TODO |
+
+---
+
 ## See Also
-- [RESILIENCE.md](./RESILIENCE.md) — For endpoint failover.
+
+- [RESILIENCE.md](./RESILIENCE.md) — Full Groq failover logic, Ollama fallback, convoy queueing
+- [CONVOYS.md](./CONVOYS.md) — Convoy schema, signing, replay prevention, failure quarantine
+- [KNOWLEDGE_GRAPH.md](./KNOWLEDGE_GRAPH.md) — KG sync protocol, MIM conflict resolution, consistency model
+- [HOOK_SCHEMA.md](./HOOK_SCHEMA.md) — Gas Town Bead and Hook wire format reference
+- [GROQ_INTEGRATION.md](./GROQ_INTEGRATION.md) — SDK setup, rate limit handling, error codes
 - [ROUTING.md](./ROUTING.md) — For model-specific safety overrides.
 - [BUILDING.md](./BUILDING.md) — Setup guide for the Safeguard sidecar.
