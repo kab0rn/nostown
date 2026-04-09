@@ -1,0 +1,10 @@
+node_modules/
+dist/
+palace-db/
+*.db
+*.db-shm
+*.db-wal
+rigs/
+nos/
+.env
+keys/*.key
