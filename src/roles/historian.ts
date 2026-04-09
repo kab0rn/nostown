@@ -61,34 +61,56 @@ export class Historian {
       return;
     }
 
+    // Check for prior interrupted run — load completed step markers from hall_events
+    // Per HARDENING.md: interrupted runs can resume from the last completed step.
+    const runDate = new Date().toISOString().slice(0, 10);
+    const completedSteps = await this.loadCompletedSteps(rigName, runDate);
+    console.log(`[Historian:${this.agentId}] Prior completed steps: [${[...completedSteps].join(', ')}]`);
+
     // 1. Export beads to classified MemPalace halls (with PII stripping)
-    await this.classifyBeadsToHalls(rigName, beads);
+    if (!completedSteps.has('classify_beads')) {
+      await this.classifyBeadsToHalls(rigName, beads);
+      await this.writeStepProgress(rigName, runDate, 'classify_beads', beads.length);
+    }
 
     // 2. AAAK COMPRESS bead manifest for Mayor context loading
-    const manifest = this.generateAaakManifest(beads.slice(-500));
-    try {
-      await this.palace.addDrawer(
-        `wing_rig_${rigName}`,
-        'hall_facts',
-        'aaak_manifest',
-        manifest,
-        'aaak manifest bead summary',
-      );
-    } catch (err) {
-      console.warn(`[Historian] AAAK manifest write failed: ${String(err)}`);
+    if (!completedSteps.has('aaak_manifest')) {
+      const manifest = this.generateAaakManifest(beads.slice(-500));
+      try {
+        await this.palace.addDrawer(
+          `wing_rig_${rigName}`,
+          'hall_facts',
+          'aaak_manifest',
+          manifest,
+          'aaak manifest bead summary',
+        );
+        await this.writeStepProgress(rigName, runDate, 'aaak_manifest', beads.length);
+      } catch (err) {
+        console.warn(`[Historian] AAAK manifest write failed: ${String(err)}`);
+      }
     }
 
     // 3. Mine patterns
     const patterns = this.minePatterns(beads);
+    await this.writeStepProgress(rigName, runDate, 'mine_patterns', patterns.size);
 
     // 4. Generate playbooks for high-success task types
-    await this.generatePlaybooks(rigName, patterns, beads);
+    if (!completedSteps.has('generate_playbooks')) {
+      await this.generatePlaybooks(rigName, patterns, beads);
+      await this.writeStepProgress(rigName, runDate, 'generate_playbooks', patterns.size);
+    }
 
     // 5. Update KG routing based on model performance
-    await this.updateRoutingKG(patterns);
+    if (!completedSteps.has('update_routing_kg')) {
+      await this.updateRoutingKG(patterns);
+      await this.writeStepProgress(rigName, runDate, 'update_routing_kg', patterns.size);
+    }
 
     // 6. Detect cross-rig tunnel-eligible rooms (ROUTING.md §Cross-Rig Routing)
-    await this.detectAndRegisterTunnels(rigName);
+    if (!completedSteps.has('detect_tunnels')) {
+      await this.detectAndRegisterTunnels(rigName);
+      await this.writeStepProgress(rigName, runDate, 'detect_tunnels', 0);
+    }
 
     // 7. Write diary entry
     try {
@@ -101,6 +123,52 @@ export class Historian {
     }
 
     console.log(`[Historian:${this.agentId}] Nightly run complete`);
+  }
+
+  /**
+   * Write a step-completed progress marker to wing_historian/hall_events.
+   * Per HARDENING.md: interrupted nightly runs resume from last completed step.
+   */
+  private async writeStepProgress(rigName: string, runDate: string, step: string, count: number): Promise<void> {
+    try {
+      await this.palace.addDrawer(
+        'wing_historian',
+        'hall_events',
+        `nightly_progress_${rigName}_${runDate}_${step}`,
+        JSON.stringify({ step, rig: rigName, date: runDate, count, completed_at: new Date().toISOString() }),
+        `nightly run step: ${step}`,
+      );
+    } catch {
+      // Non-fatal — progress marker is best-effort
+    }
+  }
+
+  /**
+   * Load step markers from a prior nightly run for this rig+date.
+   * Returns set of completed step names.
+   */
+  private async loadCompletedSteps(rigName: string, runDate: string): Promise<Set<string>> {
+    const steps = new Set<string>();
+    try {
+      const search = await this.palace.search(
+        `nightly run step ${rigName} ${runDate}`,
+        'wing_historian',
+        'hall_events',
+      );
+      for (const r of search.results) {
+        try {
+          const data = JSON.parse(r.content) as { step?: string; rig?: string; date?: string };
+          if (data.rig === rigName && data.date === runDate && data.step) {
+            steps.add(data.step);
+          }
+        } catch {
+          // ignore non-JSON entries
+        }
+      }
+    } catch {
+      // palace offline — start fresh (no resume possible)
+    }
+    return steps;
   }
 
   /**
