@@ -400,3 +400,54 @@ For each gate:
 3. Review files for code quality
 4. Check off all boxes
 5. Proceed to next gate
+
+
+---
+
+## 5. Implementation Phases (Roadmap)
+
+To build NOS Town on top of Gas Town, follow these implementation phases:
+
+### Phase 1: Core Transport (Convoys & Mailboxes)
+- **Goal**: Establish the inter-agent communication layer.
+- **Tasks**:
+  - Implement the `src/convoy/bus.ts` signature and verification logic.
+  - Setup the `~/nos/rigs/{rig}/mailboxes` folder structure.
+  - Build the `MailboxMonitor` in Node.js to wake up agents when a new `.convoy.json` file arrives.
+
+### Phase 2: MemPalace Sidecar (The Memory Layer)
+- **Goal**: Setup the persistent memory and knowledge graph.
+- **Tasks**:
+  - Implement the `mempalace-server` in Python with the MCP toolset.
+  - Connect ChromaDB for vector storage (Drawers/Closets).
+  - Setup the SQLite Knowledge Graph for model routing and team state.
+  - Verify MCP connectivity between Node.js and the Python sidecar.
+
+### Phase 3: The Mayor (The Orchestrator)
+- **Goal**: Implement the planning and decomposition logic.
+- **Tasks**:
+  - Implement the `src/mayor/planner.ts` using `groq/compound`.
+  - Add **Playbook Check** (hall_advice) before Bead decomposition.
+  - Implement the **Cycle Detection** and **Topological Sort** (see [SWARM.md](./SWARM.md)).
+
+### Phase 4: Swarm Roles (Execution Layer)
+- **Goal**: Build the specialized agents.
+- **Tasks**:
+  - Implement the **Polecat** swarm for code traversal.
+  - Implement the **Witness** council for multi-judge consensus.
+  - Implement the **Refinery** for synthesis and reasoning.
+  - Implement the **Historian** for nightly Bead mining and Playbook evolution.
+
+### Phase 5: Hardening & Resilience
+- **Goal**: Ensure production-grade reliability.
+- **Tasks**:
+  - Implement the **Safeguard** sentry (see [HARDENING.md](./HARDENING.md)).
+  - Build the **Failover Decision Tree** (see [RESILIENCE.md](./RESILIENCE.md)).
+  - Implement **Adaptive Throttling** (Backpressure) for large swarms.
+
+---
+
+## See Also
+- [MEMPALACE.md](./MEMPALACE.md) — Persistent memory details.
+- [ROUTING.md](./ROUTING.md) — How the Mayor chooses roles.
+- [RESILIENCE.md](./RESILIENCE.md) — Handling failures and outages.
