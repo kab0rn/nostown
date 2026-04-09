@@ -10,6 +10,7 @@ import {
   mayorHeartbeatGapMs,
   polecatStallRate,
   criticalBeadStarvation,
+  orphanWorkflowCount,
 } from '../telemetry/metrics.js';
 
 export type HeartbeatHandler = (event: HeartbeatEvent) => void;
@@ -79,6 +80,19 @@ export class HeartbeatMonitor {
           now - instance.lastActivity.getTime() > this.stallThresholdMs,
       ).length;
       result.observe(stalled / this.polecats.length);
+    });
+
+    // orphan_workflow_count: tracked beads still waiting with no active Mayor
+    // Per OBSERVABILITY.md: alert > 0 (workflows with active beads but no Mayor heartbeat)
+    orphanWorkflowCount.addCallback((result) => {
+      if (this.trackedBeads.size === 0) {
+        result.observe(0);
+        return;
+      }
+      const mayorMissing =
+        this.mayor === null ||
+        Date.now() - this.mayor.lastHeartbeat.getTime() > this.mayorMissingThresholdMs;
+      result.observe(mayorMissing ? this.trackedBeads.size : 0);
     });
   }
 

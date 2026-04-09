@@ -3,7 +3,7 @@
 import Groq from 'groq-sdk';
 import type { ChatCompletionCreateParamsNonStreaming } from 'groq-sdk/resources/chat/completions.js';
 import type { InferenceParams, HeartbeatEvent } from '../types/index.js';
-import { getModelForRole, getFallbackModel, getTokenLimitForRole } from './models.js';
+import { getModelForRole, getFallbackModel, getTokenLimitForRole, isOllamaEligible, OLLAMA_MODELS } from './models.js';
 import { groqApiErrors, beadLatencyMs } from '../telemetry/metrics.js';
 import { CircuitBreaker } from '../resilience/circuit-breaker.js';
 
@@ -21,10 +21,15 @@ function backoffMs(attempt: number): number {
   return delays[Math.min(attempt, delays.length - 1)] ?? 30_000;
 }
 
+/** Duration all Groq endpoints must fail before Ollama activates (RESILIENCE.md) */
+const OLLAMA_ACTIVATION_THRESHOLD_MS = 60_000;
+
 export class GroqProvider {
   private client: Groq;
   private emitHeartbeat: HeartbeatEmitter | null;
   private readonly circuitBreaker: CircuitBreaker;
+  /** Timestamp when the current Groq outage started (null = no outage) */
+  private groqOutageStartAt: number | null = null;
 
   constructor(apiKey?: string, emitHeartbeat?: HeartbeatEmitter) {
     // Allow a dummy key for tests (will fail on actual API calls, not on construction)
@@ -43,18 +48,67 @@ export class GroqProvider {
     return this.circuitBreaker.currentState;
   }
 
+  /**
+   * Call Ollama HTTP API for Tier B fallback.
+   * Per RESILIENCE.md: only activates when OLLAMA_URL is set and outage > 60s.
+   */
+  private async callOllama(
+    params: InferenceParams,
+    ollamaUrl: string,
+  ): Promise<string> {
+    const model = OLLAMA_MODELS[params.role] ?? 'llama3.2';
+    const messages = params.messages;
+
+    const response = await fetch(`${ollamaUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages, stream: false }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama HTTP ${response.status}: ${await response.text()}`);
+    }
+
+    const body = await response.json() as { message?: { content?: string } };
+    return body.message?.content ?? '';
+  }
+
   async executeInference(params: InferenceParams): Promise<string> {
     const primaryModel = getModelForRole(params.role, params.task_type, params.model);
     const fallbackModel = getFallbackModel(params.role);
     const maxTokens = params.max_tokens ?? getTokenLimitForRole(params.role);
 
+    // Check if Ollama fallback should activate (Tier B only, outage > 60s, OLLAMA_URL set)
+    const ollamaUrl = process.env.OLLAMA_URL;
+    if (
+      ollamaUrl &&
+      isOllamaEligible(params.role) &&
+      this.groqOutageStartAt !== null &&
+      Date.now() - this.groqOutageStartAt > OLLAMA_ACTIVATION_THRESHOLD_MS
+    ) {
+      console.warn(`[GroqProvider] Groq outage > 60s — routing ${params.role} to Ollama at ${ollamaUrl}`);
+      try {
+        const result = await this.callOllama(params, ollamaUrl);
+        this.emitHeartbeat?.({ type: 'PROVIDER_RECOVERED', recovered_at: new Date().toISOString() });
+        return result;
+      } catch (ollamaErr) {
+        console.error(`[GroqProvider] Ollama fallback failed: ${String(ollamaErr)}`);
+        throw new Error(`All providers exhausted (Groq + Ollama): ${String(ollamaErr)}`);
+      }
+    }
+
     try {
-      return await this.runWithRetry(primaryModel, params, maxTokens);
+      const result = await this.runWithRetry(primaryModel, params, maxTokens);
+      // Success: clear any outage timer
+      this.groqOutageStartAt = null;
+      return result;
     } catch (err: unknown) {
       const error = err as Error & { status?: number; code?: string };
 
       // Circuit breaker open — fail fast, emit exhaustion
       if (error.message?.startsWith('CIRCUIT_OPEN')) {
+        // Start/maintain outage timer
+        if (this.groqOutageStartAt === null) this.groqOutageStartAt = Date.now();
         this.emitHeartbeat?.({
           type: 'PROVIDER_EXHAUSTED',
           model: primaryModel,
@@ -71,9 +125,12 @@ export class GroqProvider {
         console.warn(`[GroqProvider] Model ${primaryModel} not found, hot-swapping to ${fallbackModel}`);
         this.emitHeartbeat?.({ type: 'MODEL_DEPRECATED', model: primaryModel, fallback: fallbackModel });
         try {
-          return await this.runWithRetry(fallbackModel, params, maxTokens);
+          const result = await this.runWithRetry(fallbackModel, params, maxTokens);
+          this.groqOutageStartAt = null;
+          return result;
         } catch (fallbackErr: unknown) {
           const fe = fallbackErr as Error;
+          if (this.groqOutageStartAt === null) this.groqOutageStartAt = Date.now();
           this.emitHeartbeat?.({
             type: 'PROVIDER_EXHAUSTED',
             model: fallbackModel,
@@ -83,7 +140,8 @@ export class GroqProvider {
         }
       }
 
-      // After exhausting retries — emit PROVIDER_EXHAUSTED
+      // After exhausting retries — track outage, emit PROVIDER_EXHAUSTED
+      if (this.groqOutageStartAt === null) this.groqOutageStartAt = Date.now();
       this.emitHeartbeat?.({
         type: 'PROVIDER_EXHAUSTED',
         model: primaryModel,

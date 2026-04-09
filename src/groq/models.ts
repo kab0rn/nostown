@@ -47,3 +47,19 @@ export function getFallbackModel(role: string): string {
 export function getTokenLimitForRole(role: string): number {
   return ROLE_TOKEN_LIMITS[role] ?? 4096;
 }
+
+/**
+ * Tier B roles can fall back to local Ollama when all Groq endpoints fail.
+ * Per RESILIENCE.md: only polecat and historian; Tier A/S roles queue instead.
+ */
+export const TIER_B_ROLES = new Set(['polecat', 'historian']);
+
+export function isOllamaEligible(role: string): boolean {
+  return TIER_B_ROLES.has(role);
+}
+
+/** Ollama model names for Tier B roles */
+export const OLLAMA_MODELS: Record<string, string> = {
+  polecat: 'llama3.2',
+  historian: 'llama3.2',
+};

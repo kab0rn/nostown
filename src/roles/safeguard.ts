@@ -1,6 +1,9 @@
 // NOS Town — Safeguard Pool (Security Scanner)
+// Per ROLES.md §Safeguard: maintains vulnerability memory in wing_safeguard/hall_facts.
+// Workers read known patterns at startup and persist newly discovered ones.
 
 import { GroqProvider } from '../groq/provider.js';
+import { MemPalaceClient } from '../mempalace/client.js';
 import type { ScanResult, InferenceParams } from '../types/index.js';
 import { safeguardQueueDepth, safeguardScanLatencyMs } from '../telemetry/metrics.js';
 
@@ -8,6 +11,7 @@ export interface SafeguardConfig {
   poolSize?: number;    // minimum 2
   groqApiKey?: string;
   rulesetCacheTtlMs?: number;
+  palaceUrl?: string;
 }
 
 interface SecurityRule {
@@ -81,15 +85,73 @@ function getOrLoadRules(ttlMs: number): SecurityRule[] {
   return rulesetCache.rules;
 }
 
+/** Cached learned vulnerability patterns (shared across workers in-process) */
+let learnedPatterns: string[] = [];
+let patternsLoadedAt = 0;
+const PATTERNS_TTL_MS = 60_000; // refresh every 60s per ROLES.md §Safeguard diary cache
+
+/** Reset the in-process pattern cache — for testing only. */
+export function _resetPatternCacheForTesting(): void {
+  learnedPatterns = [];
+  patternsLoadedAt = 0;
+}
+
 export class SafeguardWorker {
   private workerId: string;
   private provider: GroqProvider;
+  private palace: MemPalaceClient;
   private rulesetCacheTtlMs: number;
 
-  constructor(workerId: string, groqApiKey?: string, rulesetCacheTtlMs = 300_000) {
+  constructor(workerId: string, groqApiKey?: string, rulesetCacheTtlMs = 300_000, palaceUrl?: string) {
     this.workerId = workerId;
     this.provider = new GroqProvider(groqApiKey);
+    this.palace = new MemPalaceClient(palaceUrl);
     this.rulesetCacheTtlMs = rulesetCacheTtlMs;
+  }
+
+  /**
+   * Load learned vulnerability patterns from MemPalace diary.
+   * Per ROLES.md §Safeguard: reads wing_safeguard diary before each scan,
+   * refreshed every 60s to pick up patterns learned by other workers/sessions.
+   */
+  private async loadLearnedPatterns(): Promise<string[]> {
+    const now = Date.now();
+    if (now - patternsLoadedAt < PATTERNS_TTL_MS) {
+      return learnedPatterns;
+    }
+    try {
+      const diary = await this.palace.diaryRead('wing_safeguard', 20);
+      learnedPatterns = diary
+        .filter((e) => e.content.startsWith('vuln-pattern:'))
+        .map((e) => e.content.slice('vuln-pattern:'.length).trim());
+      patternsLoadedAt = now;
+    } catch {
+      // non-fatal — proceed with existing patterns
+    }
+    return learnedPatterns;
+  }
+
+  /**
+   * Persist a newly discovered vulnerability pattern to wing_safeguard/hall_facts.
+   * Per ROLES.md §Safeguard: pattern persisted as Drawer so next session reloads it.
+   */
+  private async persistPattern(rule: string, detail: string): Promise<void> {
+    const patternKey = `vuln-pattern:${rule}: ${detail}`;
+    try {
+      await this.palace.addDrawer(
+        'wing_safeguard',
+        'hall_facts',
+        `vuln-${rule}-${Date.now()}`,
+        JSON.stringify({ rule, detail, discovered_at: new Date().toISOString() }),
+        `vulnerability pattern ${rule}`,
+      );
+      // Also write to diary for fast TTL-based reload
+      await this.palace.diaryWrite('wing_safeguard', patternKey);
+      // Invalidate in-process cache so next scan picks up new patterns
+      patternsLoadedAt = 0;
+    } catch (err) {
+      console.warn(`[SafeguardWorker:${this.workerId}] Pattern persist failed: ${String(err)}`);
+    }
   }
 
   async scan(diff: string): Promise<ScanResult> {
@@ -113,24 +175,40 @@ export class SafeguardWorker {
       return { approved: false, violations };
     }
 
+    // Load learned patterns from prior sessions
+    const knownPatterns = await this.loadLearnedPatterns();
+
     // LLM-based semantic check for subtler issues
+    const newViolations: ScanResult['violations'] = [];
     try {
-      const llmCheck = await this.llmScan(diff);
+      const llmCheck = await this.llmScan(diff, knownPatterns);
       for (const v of llmCheck) {
         // Avoid duplicating static detections
         if (!violations.find((existing) => existing.rule === v.rule)) {
           violations.push(v);
+          newViolations.push(v);
         }
       }
     } catch (err) {
       console.warn(`[SafeguardWorker:${this.workerId}] LLM scan failed (static rules still apply): ${String(err)}`);
     }
 
+    // Persist newly discovered patterns for future sessions
+    for (const v of newViolations) {
+      if (v.severity === 'critical' || v.severity === 'high') {
+        void this.persistPattern(v.rule, v.detail);
+      }
+    }
+
     const approved = violations.filter((v) => v.severity === 'critical' || v.severity === 'high').length === 0;
     return { approved, violations };
   }
 
-  private async llmScan(diff: string): Promise<ScanResult['violations']> {
+  private async llmScan(diff: string, knownPatterns: string[]): Promise<ScanResult['violations']> {
+    const patternContext = knownPatterns.length > 0
+      ? `\nKnown vulnerability patterns from prior scans (apply extra scrutiny):\n${knownPatterns.slice(0, 10).join('\n')}`
+      : '';
+
     const params: InferenceParams = {
       role: 'safeguard',
       task_type: 'security_scan',
@@ -140,7 +218,7 @@ export class SafeguardWorker {
           content: `You are a security scanner. Analyze this code diff for security issues.
 Output JSON: { "violations": [{ "rule": "<id>", "severity": "critical|high|medium", "detail": "<description>" }] }
 Focus on: secrets, eval/exec, injection risks, auth bypass, insecure crypto.
-If no issues found, return { "violations": [] }.`,
+If no issues found, return { "violations": [] }.${patternContext}`,
         },
         { role: 'user', content: `Scan this diff:\n${diff.slice(0, 8000)}` },
       ],
@@ -181,6 +259,7 @@ export class SafeguardPool {
         `safeguard_${i}`,
         config.groqApiKey,
         config.rulesetCacheTtlMs,
+        config.palaceUrl,
       ),
     );
     this.availableWorkers = [...this.workers];
