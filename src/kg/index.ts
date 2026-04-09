@@ -73,7 +73,7 @@ export class KnowledgeGraph {
       SELECT * FROM triples
       WHERE subject = @subject
         AND valid_from <= @date
-        AND (valid_to IS NULL OR valid_to >= @date)
+        AND (valid_to IS NULL OR valid_to > @date)
     `;
     const params: Record<string, string> = { subject, date };
 
@@ -97,7 +97,7 @@ export class KnowledgeGraph {
       SELECT * FROM triples
       WHERE (subject = @entity OR object = @entity)
         AND valid_from <= @date
-        AND (valid_to IS NULL OR valid_to >= @date)
+        AND (valid_to IS NULL OR valid_to > @date)
       ORDER BY valid_from DESC, created_at DESC
     `).all({ entity, date }) as Array<Record<string, unknown>>;
     return rows.map(this.rowToTriple);

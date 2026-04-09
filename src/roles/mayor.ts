@@ -128,6 +128,33 @@ export class Mayor {
     // 3. Decompose task into beads
     const beads = await this.decompose(task, palaceContext, playbookHint);
 
+    // 3b. CoVe: Chain-of-Verification — query KG timeline for past Witness rejections
+    // on rooms matching this task before finalising the plan (ROLES.md §Mayor step 9)
+    let coveWarnings = '';
+    try {
+      const rejectionSearch = await this.palace.search(
+        task.description,
+        `wing_rig_${this.rigName}`,
+        'hall_events',
+      );
+      const rejections = rejectionSearch.results.filter((r) =>
+        r.content.toLowerCase().includes('rejected') ||
+        r.content.toLowerCase().includes('rejection'),
+      );
+      if (rejections.length > 0) {
+        coveWarnings = `⚠ CoVe: ${rejections.length} past rejection(s) found for similar work — flagging witness_required on high-risk beads`;
+        console.log(`[Mayor:${this.agentId}] ${coveWarnings}`);
+        // Escalate witness_required for all beads when past rejections exist
+        for (const bead of beads) {
+          if (bead.critical_path) {
+            (bead as { witness_required: boolean }).witness_required = true;
+          }
+        }
+      }
+    } catch {
+      // non-fatal
+    }
+
     // 4. MANDATORY CHECKPOINT before dispatch
     let checkpointId: string;
     try {

@@ -38,7 +38,8 @@ export class Witness {
 
   /**
    * Review a diff/patch against requirements.
-   * Uses 1 judge for non-critical, 3 for critical PRs.
+   * Per ROLES.md: reads own diary before reviewing a room seen before.
+   * Uses 1 judge for non-critical, 3 for critical PRs (2/3 majority).
    */
   async review(
     diff: string,
@@ -50,9 +51,21 @@ export class Witness {
     const votes: JudgeVote[] = [];
     const councilId = uuidv4().slice(0, 8);
 
+    // ROLES.md: read witness diary before reviewing — provides memory of past rejections
+    let diaryContext = '';
+    try {
+      const diary = await this.palace.diaryRead('wing_witness', 10);
+      const relevant = diary.filter((e) => e.content.includes(prId));
+      if (relevant.length > 0) {
+        diaryContext = `\nPrevious reviews for this PR:\n${relevant.map((e) => e.content.slice(0, 200)).join('\n')}`;
+      }
+    } catch {
+      // non-fatal — diary unavailable
+    }
+
     for (let i = 0; i < judgeCount; i++) {
       const judgeId = `${this.agentId}_judge_${i}`;
-      const vote = await this.runJudge(judgeId, diff, requirement, prId);
+      const vote = await this.runJudge(judgeId, diff, requirement + diaryContext, prId);
       votes.push(vote);
     }
 
@@ -87,7 +100,7 @@ export class Witness {
       created_at: new Date().toISOString(),
     });
 
-    // Write to MemPalace
+    // Write verdict drawer to MemPalace
     try {
       await this.palace.addDrawer(
         `wing_rig_${this.rigName}`,
@@ -98,6 +111,14 @@ export class Witness {
       );
     } catch (err) {
       console.warn(`[Witness] MemPalace write failed: ${String(err)}`);
+    }
+
+    // Write diary entry so future reviews of this room have context (ROLES.md §Witness)
+    try {
+      const diaryEntry = `PR ${prId}: ${approved ? 'APPROVED' : 'REJECTED'} (${score}) — ${(verdict.reason ?? '').slice(0, 300)}`;
+      await this.palace.diaryWrite('wing_witness', diaryEntry);
+    } catch {
+      // non-fatal
     }
 
     return verdict;
