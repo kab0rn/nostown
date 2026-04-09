@@ -26,22 +26,22 @@ NOS Town is a documentation + orchestration layer, not a full fork. The director
 
 ```
 nos/
-├── package.json              # Node.js project root
+├── package.json        # Node.js project root
 ├── src/
-│   ├── mayor/                 # Mayor orchestrator (groq/compound)
-│   ├── polecat/               # Polecat agent swarm (Llama 4 Scout / 8B)
-│   ├── witness/               # Witness council (qwen3-32b / 70B)
-│   ├── historian/             # Batch mining pipeline
-│   ├── safeguard/             # Security sentry
-│   ├── routing/               # KG-backed model routing
-│   ├── convoys/               # Message bus + mailboxes
-│   └── mempalace/             # MCP client (calls sidecar)
-├── mempalace-server/          # Python MCP sidecar (separate process)
-├── rigs/                      # One subdir per project rig
+│   ├── mayor/          # Mayor orchestrator (groq/compound)
+│   ├── polecat/        # Polecat agent swarm (Llama 4 Scout / 8B)
+│   ├── witness/        # Witness council (qwen3-32b / 70B)
+│   ├── historian/      # Batch mining pipeline
+│   ├── safeguard/      # Security sentry
+│   ├── routing/        # KG-backed model routing
+│   ├── convoys/        # Message bus + mailboxes
+│   └── mempalace/      # MCP client (calls sidecar)
+├── mempalace-server/   # Python MCP sidecar (separate process)
+├── rigs/               # One subdir per project rig
 │   └── my-project/
-│       ├── .hook              # Gas Town hook file (schema compat)
-│       └── beads.jsonl        # Gas Town bead ledger
-└── docs/                      # This documentation
+│       ├── .hook       # Gas Town hook file (schema compat)
+│       └── beads.jsonl # Gas Town bead ledger
+└── docs/               # This documentation
 ```
 
 ---
@@ -64,7 +64,7 @@ They communicate over the **MCP (Model Context Protocol)**. The Node.js agents c
 [Python mempalace MCP server :7474]
           |
           |—— ChromaDB (vector store)
-          |—— SQLite  (knowledge graph)
+          |—— SQLite (knowledge graph)
           └—— filesystem (hook files, bead ledger)
 ```
 
@@ -83,13 +83,14 @@ mempalace serve --port 7474
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
 const palace = new Client({ name: 'nos-town-agent', version: '1.0.0' }, {});
+
 // connect to mempalace sidecar
 await palace.connect(transport); // e.g. SSEClientTransport('http://localhost:7474')
 
 // Example: wake up a wing (L0+L1 palace read)
-const wakeup = await palace.callTool('palace_wakeup', {
-  wing: 'wing_rig_myproject',
-  roles: ['mayor', 'polecat']
+const wakeup = await palace.callTool('palace_wakeup', { 
+  wing: 'wing_rig_myproject', 
+  roles: ['mayor', 'polecat'] 
 });
 ```
 
@@ -208,16 +209,19 @@ Build in this order — each layer depends on the one below it:
 ## Testing Strategy
 
 ### Unit tests
+
 Test each agent in isolation by mocking the Groq SDK and MemPalace MCP client:
 
 ```typescript
 // Mock the groq-sdk
 jest.mock('groq-sdk');
+
 // Mock the palace client
 jest.mock('../mempalace/client');
 ```
 
 ### Integration tests
+
 Spin up a real MemPalace sidecar against a test SQLite + ChromaDB instance:
 
 ```bash
@@ -226,6 +230,7 @@ npx jest --testPathPattern=integration
 ```
 
 ### End-to-end tests
+
 Send a real task through the full stack (requires a valid `GROQ_API_KEY`):
 
 ```bash
@@ -242,7 +247,6 @@ npx jest --testPathPattern=e2e
 - [ROUTING.md](ROUTING.md) — Escalation ladder and KG-backed routing
 - [FORK_STRATEGY.md](FORK_STRATEGY.md) — Gas Town upstream sync strategy
 
-
 ---
 
 ## Implementation Gates
@@ -250,6 +254,7 @@ npx jest --testPathPattern=e2e
 To ensure the gastown team can build a complete project plan, NOS Town's implementation is organized into sequential gates. Each gate must be completed and tested before moving to the next.
 
 ### Gate 1: Foundation
+
 **Goal**: Get the core infrastructure running
 
 **Deliverables**:
@@ -265,6 +270,7 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 ---
 
 ### Gate 2: Roles & Routing
+
 **Goal**: Implement the Mayor, Historian, and routing rules
 
 **Deliverables**:
@@ -279,22 +285,24 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 
 ---
 
-### Gate 3: Convoys & Mailboxes
-**Goal**: Enable Gas Town compatibility via mailbox files and convoy transport
+### Gate 3: Convoys & Transport
+
+**Goal**: Enable Gas Town compatibility via convoy transport
 
 **Deliverables**:
 - [ ] Convoy signature generation and validation (see [CONVOYS.md](./CONVOYS.md))
-- [ ] Mailbox file format writer at `{BEADS_DIR}/mailboxes/{role}/inbox/*.json` (see [MAILBOXES.md](./MAILBOXES.md))
-- [ ] `gt mail check` compatibility for polling agents
+- [ ] Inter-agent communication bus at `src/convoy/transport.ts`
 - [ ] Sequence number enforcement and replay attack prevention
+- [ ] Failure quarantine logic
 
-**Test**: Send a convoy → verify mailbox file written → Gas Town agent reads via `gt mail check`
+**Test**: Send a signed convoy → verify validation passes → Receiver processes message
 
-**Files**: `src/convoy/transport.ts`, `src/convoy/mailbox.ts`, `hooks/` directory
+**Files**: `src/convoy/transport.ts`, `src/convoy/sign.ts`, `src/convoy/verify.ts`
 
 ---
 
 ### Gate 4: Knowledge Graph Integration
+
 **Goal**: Use the KG for dependency tracking and state queries
 
 **Deliverables**:
@@ -310,6 +318,7 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 ---
 
 ### Gate 5: Hooks & Gas Town Compatibility
+
 **Goal**: Load and execute .hook files for event-driven behaviors
 
 **Deliverables**:
@@ -326,6 +335,7 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 ---
 
 ### Gate 6: Resilience & Hardening
+
 **Goal**: Production-ready error handling and failover
 
 **Deliverables**:
@@ -342,6 +352,7 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 ---
 
 ### Gate 7: Swarm Workflows
+
 **Goal**: Multi-agent coordination patterns
 
 **Deliverables**:
@@ -358,6 +369,7 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 ---
 
 ### Gate 8: Full Stack Test
+
 **Goal**: End-to-end verification of all components
 
 **Deliverables**:
@@ -379,7 +391,7 @@ Follow this sequence for fastest path to working system:
 
 1. **Gate 1** (Foundation) — 2-3 days
 2. **Gate 2** (Roles & Routing) — 3-4 days
-3. **Gate 3** (Convoys & Mailboxes) — 2-3 days
+3. **Gate 3** (Convoys) — 2-3 days
 4. **Gate 4** (Knowledge Graph) — 3-4 days
 5. **Gate 5** (Hooks) — 2-3 days
 6. **Gate 6** (Resilience) — 2-3 days
@@ -392,62 +404,18 @@ Follow this sequence for fastest path to working system:
 
 ## Progress Tracking
 
-Use the checkboxes in each gate to track implementation progress. All checkboxes must be complete before moving to the next gate.
+Use the checkboxes in each gate to track implementation progress. All checkboxes must be complete before moving to the next gate. For each gate:
 
-For each gate:
 1. Complete all deliverables
 2. Run the gate's test scenario
 3. Review files for code quality
 4. Check off all boxes
 5. Proceed to next gate
 
-
----
-
-## 5. Implementation Phases (Roadmap)
-
-To build NOS Town on top of Gas Town, follow these implementation phases:
-
-### Phase 1: Core Transport (Convoys & Mailboxes)
-- **Goal**: Establish the inter-agent communication layer.
-- **Tasks**:
-  - Implement the `src/convoy/bus.ts` signature and verification logic.
-  - Setup the `~/nos/rigs/{rig}/mailboxes` folder structure.
-  - Build the `MailboxMonitor` in Node.js to wake up agents when a new `.convoy.json` file arrives.
-
-### Phase 2: MemPalace Sidecar (The Memory Layer)
-- **Goal**: Setup the persistent memory and knowledge graph.
-- **Tasks**:
-  - Implement the `mempalace-server` in Python with the MCP toolset.
-  - Connect ChromaDB for vector storage (Drawers/Closets).
-  - Setup the SQLite Knowledge Graph for model routing and team state.
-  - Verify MCP connectivity between Node.js and the Python sidecar.
-
-### Phase 3: The Mayor (The Orchestrator)
-- **Goal**: Implement the planning and decomposition logic.
-- **Tasks**:
-  - Implement the `src/mayor/planner.ts` using `groq/compound`.
-  - Add **Playbook Check** (hall_advice) before Bead decomposition.
-  - Implement the **Cycle Detection** and **Topological Sort** (see [SWARM.md](./SWARM.md)).
-
-### Phase 4: Swarm Roles (Execution Layer)
-- **Goal**: Build the specialized agents.
-- **Tasks**:
-  - Implement the **Polecat** swarm for code traversal.
-  - Implement the **Witness** council for multi-judge consensus.
-  - Implement the **Refinery** for synthesis and reasoning.
-  - Implement the **Historian** for nightly Bead mining and Playbook evolution.
-
-### Phase 5: Hardening & Resilience
-- **Goal**: Ensure production-grade reliability.
-- **Tasks**:
-  - Implement the **Safeguard** sentry (see [HARDENING.md](./HARDENING.md)).
-  - Build the **Failover Decision Tree** (see [RESILIENCE.md](./RESILIENCE.md)).
-  - Implement **Adaptive Throttling** (Backpressure) for large swarms.
-
 ---
 
 ## See Also
+
 - [MEMPALACE.md](./MEMPALACE.md) — Persistent memory details.
 - [ROUTING.md](./ROUTING.md) — How the Mayor chooses roles.
 - [RESILIENCE.md](./RESILIENCE.md) — Handling failures and outages.
