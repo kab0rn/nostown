@@ -10,7 +10,7 @@ import { loadPrivateKey } from '../convoys/sign.js';
 import { RoutingDispatcher } from '../routing/dispatch.js';
 import type { Bead, ConvoyMessage, InferenceParams, HeartbeatEvent, PlaybookEntry } from '../types/index.js';
 import { Ledger as LedgerClass } from '../ledger/index.js';
-import { DEFAULT_IN_FLIGHT_LIMITS } from '../swarm/tools.js';
+import { DEFAULT_IN_FLIGHT_LIMITS, isRendezvousNode } from '../swarm/tools.js';
 import { v4 as uuidv4 } from 'uuid';
 
 export type HeartbeatEmitter = (event: HeartbeatEvent) => void;
@@ -119,6 +119,18 @@ export class Mayor {
       throw new Error(
         `Mayor WAITING_FOR_CAPACITY: ${inProgressCount} beads in-flight (limit: ${inFlightLimits.maxPolecatBeads})`,
       );
+    }
+
+    // 0b. Inbox backpressure: if a role's inbox exceeds 50 unread convoys, pause (CONVOYS.md §Backpressure)
+    const INBOX_BACKPRESSURE_LIMIT = 50;
+    const bus = new ConvoyBus(this.rigName);
+    for (const role of ['polecat', 'witness', 'safeguard']) {
+      const depth = bus.inboxCount(role);
+      if (depth >= INBOX_BACKPRESSURE_LIMIT) {
+        throw new Error(
+          `Mayor WAITING_FOR_CAPACITY: ${role} inbox depth ${depth} >= ${INBOX_BACKPRESSURE_LIMIT}`,
+        );
+      }
     }
 
     // 1. Palace wakeup
@@ -485,6 +497,30 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
     // DISPATCH GUARD: must have checkpoint
     if (!bead.plan_checkpoint_id) {
       throw new Error(`MAYOR_CHECKPOINT_MISSING: bead ${bead.bead_id} has no plan_checkpoint_id`);
+    }
+
+    // RENDEZVOUS GUARD: rendezvous nodes MUST wait for ALL prerequisites (SWARM.md §Rendezvous)
+    if (isRendezvousNode(bead)) {
+      const allBeads = this.ledger.readBeads(this.rigName);
+      const completedIds = new Set(
+        allBeads
+          .filter((b) => b.status === 'done' || b.outcome === 'SUCCESS')
+          .map((b) => b.bead_id),
+      );
+      const unmetPrereqs = bead.needs.filter((id) => !completedIds.has(id));
+      if (unmetPrereqs.length > 0) {
+        // Mark as blocked — caller should retry when prerequisites complete
+        const blocked: Bead = {
+          ...bead,
+          status: 'blocked',
+          updated_at: new Date().toISOString(),
+        };
+        await this.ledger.appendBead(this.rigName, blocked);
+        console.log(
+          `[Mayor:${this.agentId}] Rendezvous bead ${bead.bead_id} blocked — waiting for: ${unmetPrereqs.join(', ')}`,
+        );
+        return;
+      }
     }
 
     // OUTAGE GUARD: during provider outage, queue bead instead of dispatching (RESILIENCE.md)

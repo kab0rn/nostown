@@ -43,6 +43,37 @@ export class GroqProvider {
       failureThreshold: 5,
       recoveryTimeoutMs: 60_000,
     });
+    // Startup health check for Ollama fallback (RESILIENCE.md)
+    // Deferred to next tick so callers can set up before the check fires.
+    // Non-blocking: warns if OLLAMA_URL is set but unreachable at startup.
+    if (process.env.OLLAMA_URL) {
+      setImmediate(() => void this.checkOllamaHealth());
+    }
+  }
+
+  /**
+   * Startup health check for Ollama fallback.
+   * Per RESILIENCE.md: warns if Ollama is configured but unreachable.
+   * Non-fatal — Groq is the primary provider.
+   */
+  async checkOllamaHealth(): Promise<boolean> {
+    const ollamaUrl = process.env.OLLAMA_URL;
+    if (!ollamaUrl) return true; // Not configured — nothing to check
+
+    try {
+      const res = await fetch(`${ollamaUrl}/api/tags`, {
+        signal: AbortSignal.timeout(3_000), // 3s timeout
+      });
+      if (!res.ok) {
+        console.warn(`[GroqProvider] Ollama health check failed: HTTP ${res.status}. Fallback unavailable.`);
+        return false;
+      }
+      console.log(`[GroqProvider] Ollama health check OK at ${ollamaUrl}`);
+      return true;
+    } catch (err) {
+      console.warn(`[GroqProvider] Ollama at ${ollamaUrl} unreachable at startup: ${String(err)}. Fallback unavailable until Ollama starts.`);
+      return false;
+    }
   }
 
   /** Expose circuit state for monitoring / tests */

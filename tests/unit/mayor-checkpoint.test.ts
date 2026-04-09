@@ -151,6 +151,20 @@ describe('Mayor checkpoint before dispatch (#8)', () => {
     );
     expect(plan.beads.length).toBeGreaterThan(0);
   });
+
+  it('throws WAITING_FOR_CAPACITY when inbox depth >= 50 (CONVOYS.md §Backpressure)', async () => {
+    const { ConvoyBus } = await import('../../src/convoys/bus');
+    // Simulate polecat inbox at 50 unread convoys
+    jest.spyOn(ConvoyBus.prototype, 'inboxCount').mockImplementation((role: string) => {
+      return role === 'polecat' ? 50 : 0;
+    });
+
+    await expect(
+      mayor.orchestrate({ description: 'Should be inbox-blocked' }),
+    ).rejects.toThrow(/WAITING_FOR_CAPACITY.*polecat.*50/);
+
+    jest.restoreAllMocks();
+  });
 });
 
 describe('Mayor outage queue (RESILIENCE.md §Convoy Queueing)', () => {

@@ -15,6 +15,35 @@ export interface WriteOp {
   enqueuedAt: number;
 }
 
+/**
+ * Mode B promotion thresholds (MEMPALACE.md §Promotion Criteria).
+ * Move from Mode A to Mode B when any of these is true:
+ *   - p95 KG write latency > 50ms
+ *   - p95 addDrawer latency > 150ms
+ *   - concurrent writer agents > 10
+ */
+export const MODE_B_THRESHOLDS = {
+  p95KgWriteLatencyMs: 50,
+  p95AddDrawerLatencyMs: 150,
+  maxConcurrentWriters: 10,
+} as const;
+
+/**
+ * Evaluate whether the system should promote from Mode A (direct writes)
+ * to Mode B (queued write front door).
+ * (MEMPALACE.md §Promotion Criteria)
+ */
+export function shouldPromoteToModeB(opts: {
+  p95KgWriteLatencyMs?: number;
+  p95AddDrawerLatencyMs?: number;
+  concurrentWriters?: number;
+}): boolean {
+  if ((opts.p95KgWriteLatencyMs ?? 0) > MODE_B_THRESHOLDS.p95KgWriteLatencyMs) return true;
+  if ((opts.p95AddDrawerLatencyMs ?? 0) > MODE_B_THRESHOLDS.p95AddDrawerLatencyMs) return true;
+  if ((opts.concurrentWriters ?? 0) > MODE_B_THRESHOLDS.maxConcurrentWriters) return true;
+  return false;
+}
+
 export interface WriteQueueConfig {
   /** Maximum number of pending write ops before new writes block (default: 200) */
   maxDepth?: number;
@@ -31,6 +60,8 @@ export interface WriteQueueMetrics {
   dropped: number;
   queueDepth: number;
   p95LatencyMs: number;
+  /** True when p95 latency has exceeded Mode B promotion threshold */
+  promotionAdvisory: boolean;
 }
 
 /**
@@ -142,13 +173,15 @@ export class MemPalaceWriteQueue {
   get metrics(): WriteQueueMetrics {
     const sorted = [...this._latencies].sort((a, b) => a - b);
     const p95Idx = Math.floor(sorted.length * 0.95);
+    const p95 = sorted[p95Idx] ?? 0;
     return {
       enqueued: this._enqueued,
       completed: this._completed,
       failed: this._failed,
       dropped: this._dropped,
       queueDepth: this.queue.length,
-      p95LatencyMs: sorted[p95Idx] ?? 0,
+      p95LatencyMs: p95,
+      promotionAdvisory: shouldPromoteToModeB({ p95AddDrawerLatencyMs: p95 }),
     };
   }
 

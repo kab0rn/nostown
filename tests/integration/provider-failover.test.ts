@@ -248,7 +248,11 @@ describe('GroqProvider Ollama fallback (RESILIENCE.md §Local Ollama)', () => {
 
     // Mayor should NOT route to Ollama — should throw
     await expect(promise).rejects.toThrow();
-    expect(fetchSpy).not.toHaveBeenCalled();
+    // Ollama inference (/api/chat) must not be called; /api/tags may fire from health check
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('/api/chat'),
+      expect.anything(),
+    );
   });
 
   it('activates Ollama for Tier B role after 60s outage when OLLAMA_URL is set', async () => {
@@ -296,8 +300,12 @@ describe('GroqProvider Ollama fallback (RESILIENCE.md §Local Ollama)', () => {
     await jest.runAllTimersAsync();
     await handled;
 
-    // Should NOT have called Ollama — still within 60s window
-    expect(fetchSpy).not.toHaveBeenCalled();
+    // Should NOT have called Ollama inference — still within 60s window
+    // (/api/tags may fire from health check; only /api/chat is the fallback endpoint)
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('/api/chat'),
+      expect.anything(),
+    );
   });
 
   it('does NOT activate Ollama when OLLAMA_URL is not set', async () => {
