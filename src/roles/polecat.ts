@@ -3,6 +3,7 @@
 import { GroqProvider } from '../groq/provider.js';
 import { Ledger } from '../ledger/index.js';
 import { MemPalaceClient } from '../mempalace/client.js';
+import type { SafeguardPool } from './safeguard.js';
 import type { Bead, InferenceParams, HeartbeatEvent } from '../types/index.js';
 import { beadThroughput } from '../telemetry/metrics.js';
 
@@ -14,6 +15,12 @@ export interface PolecatConfig {
   groqApiKey?: string;
   emitHeartbeat?: HeartbeatEmitter;
   palaceUrl?: string;
+  /**
+   * Optional Safeguard pool for pre-write diff scanning.
+   * Per HARDENING.md §4.1: Safeguard scans result diff before FILE_WRITE.
+   * If provided and scan rejects, the bead is marked FAILURE with violation detail.
+   */
+  safeguard?: SafeguardPool;
 }
 
 export interface ExecutionContext {
@@ -29,6 +36,7 @@ export class Polecat {
   private provider: GroqProvider;
   private ledger: Ledger;
   private palace: MemPalaceClient;
+  private safeguard: SafeguardPool | null;
   private emitHeartbeat: HeartbeatEmitter | null;
 
   // Track last activity time for heartbeat stall detection
@@ -41,6 +49,7 @@ export class Polecat {
     this.provider = new GroqProvider(config.groqApiKey, config.emitHeartbeat);
     this.ledger = new Ledger();
     this.palace = new MemPalaceClient(config.palaceUrl);
+    this.safeguard = config.safeguard ?? null;
     this.emitHeartbeat = config.emitHeartbeat ?? null;
   }
 
@@ -124,6 +133,36 @@ export class Polecat {
       this.lastActivityAt = new Date();
 
       const durationMs = Date.now() - startMs;
+
+      // Safeguard pre-write scan (HARDENING.md §4.1)
+      // If a SafeguardPool is wired in, scan the result diff before writing.
+      if (this.safeguard) {
+        const scanPriority = bead.critical_path ? 10 : 0;
+        const scanResult = await this.safeguard.scan(result, scanPriority);
+        if (!scanResult.approved) {
+          const topViolation = scanResult.violations[0];
+          const violationDetail = topViolation
+            ? `${topViolation.severity}: ${topViolation.rule} — ${topViolation.detail}`
+            : 'safeguard rejected result';
+
+          const blocked: Bead = {
+            ...inProgress,
+            status: 'failed',
+            outcome: 'FAILURE',
+            metrics: { ...bead.metrics, duration_ms: durationMs },
+            updated_at: new Date().toISOString(),
+          };
+          await this.ledger.appendBead(this.rigName, blocked);
+          console.error(`[Polecat:${this.agentId}] Safeguard blocked bead ${bead.bead_id}: ${violationDetail}`);
+          this.emitHeartbeat?.({
+            type: 'BEAD_BLOCKED',
+            bead_id: bead.bead_id,
+            retry_count: 0,
+          });
+          this.activeBead = null;
+          return blocked;
+        }
+      }
 
       // Write success to ledger
       const done: Bead = {

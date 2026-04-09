@@ -80,16 +80,15 @@ export class RoutingDispatcher {
     // 2. Check for KG demotion (blocked model)
     const demoted = this.queryKgDemotion(ctx.taskType);
 
-    // 3. Playbook shortcut — if hit with >90% success, lock to primary
-    if (ctx.playbookHit) {
-      const primaryModel = getModelForRole(ctx.role, ctx.taskType);
-      const model = demoted === primaryModel ? fallback : primaryModel;
+    // 3. Playbook shortcut — if hit with >90% success, lock to model_hint
+    if (ctx.playbookHit?.model_hint) {
+      const model = ctx.playbookHit.model_hint;
       return {
         model,
         fallback,
-        locked: false,
+        locked: true,
         playbookUsed: true,
-        reason: `Playbook shortcut: ${ctx.playbookHit.model_hint ?? model} for ${ctx.taskType}`,
+        reason: `Playbook shortcut: ${model} for ${ctx.taskType}`,
       };
     }
 

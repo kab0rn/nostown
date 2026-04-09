@@ -7,7 +7,8 @@ import { KnowledgeGraph } from '../kg/index.js';
 import { ConvoyBus } from '../convoys/bus.js';
 import { buildSignedConvoy } from '../convoys/sign.js';
 import { loadPrivateKey } from '../convoys/sign.js';
-import type { Bead, ConvoyMessage, InferenceParams, HeartbeatEvent } from '../types/index.js';
+import { RoutingDispatcher } from '../routing/dispatch.js';
+import type { Bead, ConvoyMessage, InferenceParams, HeartbeatEvent, PlaybookEntry } from '../types/index.js';
 import { Ledger as LedgerClass } from '../ledger/index.js';
 import { DEFAULT_IN_FLIGHT_LIMITS } from '../swarm/tools.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -44,6 +45,7 @@ export class Mayor {
   private ledger: Ledger;
   private palace: MemPalaceClient;
   private kg: KnowledgeGraph;
+  private router: RoutingDispatcher;
   private heartbeatIntervalMs: number;
   private emitHeartbeat: HeartbeatEmitter | null;
   private lastHeartbeatAt: Date = new Date();
@@ -59,6 +61,7 @@ export class Mayor {
     this.ledger = new Ledger();
     this.palace = new MemPalaceClient(config.palaceUrl);
     this.kg = new KnowledgeGraph(config.kgPath);
+    this.router = new RoutingDispatcher(this.kg);
     this.heartbeatIntervalMs = config.heartbeatIntervalMs ?? 60_000;
     this.emitHeartbeat = config.emitHeartbeat ?? null;
   }
@@ -129,6 +132,7 @@ export class Mayor {
 
     // 2. Check playbooks in MemPalace with freshness guard (ROUTING.md §Playbook Freshness Guard)
     let playbookHint = '';
+    let activePlaybook: PlaybookEntry | undefined;
     try {
       const search = await this.palace.search(task.description, `wing_rig_${this.rigName}`, 'hall_advice');
       if (search.results.length > 0) {
@@ -140,6 +144,23 @@ export class Mayor {
         );
         if (freshness.isFresh) {
           playbookHint = `Relevant playbook: ${playbookContent.slice(0, 500)}`;
+          // Parse into PlaybookEntry for routing lock (ROUTING.md §Playbook Shortcut)
+          try {
+            const pb = JSON.parse(playbookContent) as Partial<PlaybookEntry>;
+            if (pb.task_type && pb.model_hint) {
+              activePlaybook = {
+                id: pb.id ?? 'unknown',
+                title: pb.title ?? pb.task_type,
+                task_type: pb.task_type,
+                steps: Array.isArray(pb.steps) ? pb.steps : [],
+                model_hint: pb.model_hint,
+                created_at: pb.created_at ?? new Date().toISOString(),
+              };
+              console.log(`[Mayor:${this.agentId}] Playbook lock active: ${activePlaybook.model_hint} for ${activePlaybook.task_type}`);
+            }
+          } catch {
+            // content is not JSON — use as text hint only
+          }
         } else {
           // Attach as advisory context only — routing NOT locked to primary
           playbookHint = `[Advisory only — ${freshness.reason}] ${playbookContent.slice(0, 300)}`;
@@ -150,8 +171,8 @@ export class Mayor {
       // non-fatal
     }
 
-    // 3. Decompose task into beads
-    const beads = await this.decompose(task, palaceContext, playbookHint);
+    // 3. Decompose task into beads (pass activePlaybook for routing lock)
+    const beads = await this.decompose(task, palaceContext, playbookHint, activePlaybook);
 
     // 3b. CoVe: Chain-of-Verification — query KG timeline for past Witness rejections
     // on rooms matching this task before finalising the plan (ROLES.md §Mayor step 9)
@@ -213,11 +234,14 @@ export class Mayor {
 
   /**
    * Decompose a task into beads using Groq.
+   * If activePlaybook is provided (fresh, >90% success), the RoutingDispatcher
+   * locks model selection to the playbook's model_hint (ROUTING.md §Playbook Shortcut).
    */
   private async decompose(
     task: Task,
     context: string,
     playbookHint: string,
+    activePlaybook?: PlaybookEntry,
   ): Promise<Bead[]> {
     const systemPrompt = `You are the Mayor orchestrator of NOS Town. Decompose tasks into atomic beads.
 Output JSON: { "beads": [ { "task_type": string, "task_description": string, "role": "polecat"|"witness"|"safeguard", "needs": [], "critical_path": boolean, "witness_required": boolean, "fan_out_weight": number, "priority": "high"|"medium"|"low" } ] }
@@ -245,19 +269,30 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
       const parsed = JSON.parse(raw) as { beads?: Array<Record<string, unknown>> };
       const rawBeads = Array.isArray(parsed.beads) ? parsed.beads : [];
 
-      // First pass: create beads with temporary IDs to build dependency graph
-      const tempBeads = rawBeads.map((rb, i) => LedgerClass.createBead({
-        role: String(rb.role ?? 'polecat'),
-        task_type: String(rb.task_type ?? task.task_type ?? 'execute'),
-        model: this.modelForRole(String(rb.role ?? 'polecat')),
-        task_description: String(rb.task_description ?? task.description),
-        needs: Array.isArray(rb.needs) ? rb.needs.map(String) : [],
-        critical_path: task.critical_path ?? Boolean(rb.critical_path),
-        witness_required: Boolean(rb.witness_required),
-        fan_out_weight: Number(rb.fan_out_weight ?? 1),
-        rig: this.rigName,
-        status: 'pending',
-      }));
+      // First pass: create beads using RoutingDispatcher for model selection
+      // (ROUTING.md: KG lock > Playbook shortcut > Complexity table > Role default)
+      const tempBeads = rawBeads.map((rb) => {
+        const role = String(rb.role ?? 'polecat');
+        const taskType = String(rb.task_type ?? task.task_type ?? 'execute');
+        const decision = this.router.dispatch({
+          role,
+          taskType,
+          rigName: this.rigName,
+          playbookHit: activePlaybook?.task_type === taskType ? activePlaybook : undefined,
+        });
+        return LedgerClass.createBead({
+          role,
+          task_type: taskType,
+          model: decision.model,
+          task_description: String(rb.task_description ?? task.description),
+          needs: Array.isArray(rb.needs) ? rb.needs.map(String) : [],
+          critical_path: task.critical_path ?? Boolean(rb.critical_path),
+          witness_required: Boolean(rb.witness_required),
+          fan_out_weight: Number(rb.fan_out_weight ?? 1),
+          rig: this.rigName,
+          status: 'pending',
+        });
+      });
 
       // Second pass: compute fan_out_weight = number of beads that depend on each bead
       // (ROLES.md: Mayor MUST annotate critical_path and fan_out_weight)
