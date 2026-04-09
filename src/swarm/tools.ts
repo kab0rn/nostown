@@ -131,6 +131,57 @@ export function swarmAbortWorkflow(
 }
 
 /**
+ * In-flight limits for swarm backpressure (SWARM.md §3 Adaptive Throttling).
+ */
+export interface InFlightLimits {
+  maxPolecatBeads: number;
+  maxWitnessBeads: number;
+}
+
+const DEFAULT_LIMITS: InFlightLimits = {
+  maxPolecatBeads: 50,
+  maxWitnessBeads: 20,
+};
+
+const MAX_LIMITS: InFlightLimits = {
+  maxPolecatBeads: 100,
+  maxWitnessBeads: 40,
+};
+
+/**
+ * Adaptive backpressure: temporarily increase in-flight limits when throughput
+ * is high and error rates are low.
+ * Per SWARM.md §3 and §swarm_rebalance_limits():
+ *   - Increase limits by 50% (up to MAX_LIMITS) when errorRate < 5% and throughput >= 10 beads/min
+ *   - Restore defaults when errorRate >= 5% or throughput < 10
+ */
+export function swarmRebalanceLimits(
+  current: InFlightLimits,
+  metrics: { beadsPerMinute: number; errorRate: number },
+): InFlightLimits {
+  const { beadsPerMinute, errorRate } = metrics;
+
+  if (errorRate < 0.05 && beadsPerMinute >= 10) {
+    // Expand limits by 50%, capped at MAX_LIMITS
+    return {
+      maxPolecatBeads: Math.min(
+        Math.floor(current.maxPolecatBeads * 1.5),
+        MAX_LIMITS.maxPolecatBeads,
+      ),
+      maxWitnessBeads: Math.min(
+        Math.floor(current.maxWitnessBeads * 1.5),
+        MAX_LIMITS.maxWitnessBeads,
+      ),
+    };
+  }
+
+  // Revert to defaults when conditions are no longer favorable
+  return { ...DEFAULT_LIMITS };
+}
+
+export { DEFAULT_LIMITS as DEFAULT_IN_FLIGHT_LIMITS };
+
+/**
  * Check if a bead is a rendezvous node (has multiple prerequisites).
  */
 export function isRendezvousNode(bead: Bead): boolean {

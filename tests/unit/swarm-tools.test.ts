@@ -1,6 +1,14 @@
 // Tests: Swarm tools — Gate 7
 
-import { swarmStatus, swarmResetBead, swarmAbortWorkflow, findForkGroups, isRendezvousNode } from '../../src/swarm/tools';
+import {
+  swarmStatus,
+  swarmResetBead,
+  swarmAbortWorkflow,
+  findForkGroups,
+  isRendezvousNode,
+  swarmRebalanceLimits,
+  DEFAULT_IN_FLIGHT_LIMITS,
+} from '../../src/swarm/tools';
 import { Ledger } from '../../src/ledger/index';
 import type { Bead } from '../../src/types/index';
 
@@ -118,6 +126,57 @@ describe('isRendezvousNode', () => {
     expect(isRendezvousNode(join)).toBe(true);
     expect(isRendezvousNode(simple)).toBe(false);
     expect(isRendezvousNode(root)).toBe(false);
+  });
+});
+
+describe('swarmRebalanceLimits (adaptive backpressure)', () => {
+  it('expands limits when throughput is high and error rate is low', () => {
+    const result = swarmRebalanceLimits(DEFAULT_IN_FLIGHT_LIMITS, {
+      beadsPerMinute: 15,
+      errorRate: 0.02,
+    });
+
+    // 50 * 1.5 = 75; 20 * 1.5 = 30
+    expect(result.maxPolecatBeads).toBe(75);
+    expect(result.maxWitnessBeads).toBe(30);
+  });
+
+  it('restores defaults when error rate is too high', () => {
+    const expanded = { maxPolecatBeads: 75, maxWitnessBeads: 30 };
+    const result = swarmRebalanceLimits(expanded, {
+      beadsPerMinute: 20,
+      errorRate: 0.10,  // >= 5%
+    });
+
+    expect(result.maxPolecatBeads).toBe(DEFAULT_IN_FLIGHT_LIMITS.maxPolecatBeads);
+    expect(result.maxWitnessBeads).toBe(DEFAULT_IN_FLIGHT_LIMITS.maxWitnessBeads);
+  });
+
+  it('restores defaults when throughput is too low', () => {
+    const expanded = { maxPolecatBeads: 75, maxWitnessBeads: 30 };
+    const result = swarmRebalanceLimits(expanded, {
+      beadsPerMinute: 5,  // < 10
+      errorRate: 0.01,
+    });
+
+    expect(result.maxPolecatBeads).toBe(DEFAULT_IN_FLIGHT_LIMITS.maxPolecatBeads);
+    expect(result.maxWitnessBeads).toBe(DEFAULT_IN_FLIGHT_LIMITS.maxWitnessBeads);
+  });
+
+  it('caps expansion at MAX_LIMITS (100 polecat, 40 witness)', () => {
+    const alreadyHigh = { maxPolecatBeads: 90, maxWitnessBeads: 38 };
+    const result = swarmRebalanceLimits(alreadyHigh, {
+      beadsPerMinute: 50,
+      errorRate: 0.01,
+    });
+
+    expect(result.maxPolecatBeads).toBe(100);  // 90 * 1.5 = 135 → capped at 100
+    expect(result.maxWitnessBeads).toBe(40);    // 38 * 1.5 = 57 → capped at 40
+  });
+
+  it('defaults are within expected ranges', () => {
+    expect(DEFAULT_IN_FLIGHT_LIMITS.maxPolecatBeads).toBe(50);
+    expect(DEFAULT_IN_FLIGHT_LIMITS.maxWitnessBeads).toBe(20);
   });
 });
 

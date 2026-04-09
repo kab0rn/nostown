@@ -2,6 +2,7 @@
 
 import { GroqProvider } from '../groq/provider.js';
 import type { ScanResult, InferenceParams } from '../types/index.js';
+import { safeguardQueueDepth, safeguardScanLatencyMs } from '../telemetry/metrics.js';
 
 export interface SafeguardConfig {
   poolSize?: number;    // minimum 2
@@ -157,9 +158,21 @@ If no issues found, return { "violations": [] }.`,
   }
 }
 
+interface ScanQueueEntry {
+  diff: string;
+  /** Higher number = higher priority. critical_path beads use 10; default is 0. */
+  priority: number;
+  /** Number of worker failures for this entry — reject after exhausting pool. */
+  failCount: number;
+  resolve: (result: ScanResult) => void;
+  reject: (err: unknown) => void;
+}
+
 export class SafeguardPool {
   private workers: SafeguardWorker[];
-  private roundRobinIndex = 0;
+  private availableWorkers: SafeguardWorker[];
+  /** Priority queue: sorted descending by priority on insertion */
+  private queue: ScanQueueEntry[] = [];
 
   constructor(config: SafeguardConfig = {}) {
     const size = Math.max(2, config.poolSize ?? 2); // minimum 2 workers
@@ -170,32 +183,80 @@ export class SafeguardPool {
         config.rulesetCacheTtlMs,
       ),
     );
+    this.availableWorkers = [...this.workers];
+
+    // Wire safeguardQueueDepth observable gauge to this pool
+    safeguardQueueDepth.addCallback((result) => {
+      result.observe(this.queue.length);
+    });
   }
 
   /**
-   * Scan a diff using the next available worker (round-robin with failover).
-   * If the selected worker throws, the next worker in the pool is tried.
+   * Scan a diff, queuing if all workers are busy.
+   * @param priority Higher = higher priority; critical_path beads should pass 10.
    */
-  async scan(diff: string): Promise<ScanResult> {
-    const startIndex = this.roundRobinIndex % this.workers.length;
-    this.roundRobinIndex++;
+  scan(diff: string, priority = 0): Promise<ScanResult> {
+    return new Promise<ScanResult>((resolve, reject) => {
+      const entry: ScanQueueEntry = { diff, priority, failCount: 0, resolve, reject };
+      this.enqueue(entry);
+      this.dispatch();
+    });
+  }
 
-    for (let i = 0; i < this.workers.length; i++) {
-      const workerIndex = (startIndex + i) % this.workers.length;
-      try {
-        return await this.workers[workerIndex].scan(diff);
-      } catch (err) {
-        console.warn(`[SafeguardPool] Worker ${workerIndex} failed: ${String(err)}`);
-        if (i === this.workers.length - 1) {
-          throw new Error(`SafeguardPool: all ${this.workers.length} workers exhausted`);
-        }
-      }
+  private enqueue(entry: ScanQueueEntry): void {
+    // Insert in descending priority order (higher priority → earlier position)
+    let i = 0;
+    while (i < this.queue.length && this.queue[i].priority >= entry.priority) {
+      i++;
     }
+    this.queue.splice(i, 0, entry);
+  }
 
-    throw new Error('SafeguardPool: scan loop exited unexpectedly');
+  private dispatch(): void {
+    while (this.availableWorkers.length > 0 && this.queue.length > 0) {
+      const worker = this.availableWorkers.shift()!;
+      const entry = this.queue.shift()!;
+      this.runEntry(worker, entry);
+    }
+  }
+
+  private runEntry(worker: SafeguardWorker, entry: ScanQueueEntry): void {
+    const start = Date.now();
+    worker.scan(entry.diff).then(
+      (result) => {
+        safeguardScanLatencyMs.record(Date.now() - start);
+        this.availableWorkers.push(worker);
+        entry.resolve(result);
+        this.dispatch();
+      },
+      (err: unknown) => {
+        console.warn(`[SafeguardPool] Worker failed: ${String(err)}`);
+        entry.failCount++;
+        // Return the failed worker to the pool
+        this.availableWorkers.push(worker);
+
+        if (entry.failCount >= this.workers.length) {
+          // All workers have been tried — give up
+          entry.reject(new Error(`SafeguardPool: all ${this.workers.length} workers exhausted`));
+        } else if (this.availableWorkers.length > 0) {
+          // Retry immediately with a different worker
+          const nextWorker = this.availableWorkers.shift()!;
+          this.runEntry(nextWorker, entry);
+        } else {
+          // No workers currently free — requeue at front (max priority)
+          entry.priority = Number.MAX_SAFE_INTEGER;
+          this.enqueue(entry);
+        }
+        this.dispatch();
+      },
+    );
   }
 
   get workerCount(): number {
     return this.workers.length;
+  }
+
+  get queueDepth(): number {
+    return this.queue.length;
   }
 }

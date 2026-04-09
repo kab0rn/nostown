@@ -5,6 +5,7 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'groq-sdk/resources/
 import type { InferenceParams, HeartbeatEvent } from '../types/index.js';
 import { getModelForRole, getFallbackModel, getTokenLimitForRole } from './models.js';
 import { groqApiErrors, beadLatencyMs } from '../telemetry/metrics.js';
+import { CircuitBreaker } from '../resilience/circuit-breaker.js';
 
 export type HeartbeatEmitter = (event: HeartbeatEvent) => void;
 
@@ -23,12 +24,23 @@ function backoffMs(attempt: number): number {
 export class GroqProvider {
   private client: Groq;
   private emitHeartbeat: HeartbeatEmitter | null;
+  private readonly circuitBreaker: CircuitBreaker;
 
   constructor(apiKey?: string, emitHeartbeat?: HeartbeatEmitter) {
     // Allow a dummy key for tests (will fail on actual API calls, not on construction)
     const key = apiKey ?? process.env.GROQ_API_KEY ?? 'test-key-placeholder';
     this.client = new Groq({ apiKey: key });
     this.emitHeartbeat = emitHeartbeat ?? null;
+    this.circuitBreaker = new CircuitBreaker({
+      name: 'groq-api',
+      failureThreshold: 5,
+      recoveryTimeoutMs: 60_000,
+    });
+  }
+
+  /** Expose circuit state for monitoring / tests */
+  get circuitState() {
+    return this.circuitBreaker.currentState;
   }
 
   async executeInference(params: InferenceParams): Promise<string> {
@@ -40,6 +52,16 @@ export class GroqProvider {
       return await this.runWithRetry(primaryModel, params, maxTokens);
     } catch (err: unknown) {
       const error = err as Error & { status?: number; code?: string };
+
+      // Circuit breaker open — fail fast, emit exhaustion
+      if (error.message?.startsWith('CIRCUIT_OPEN')) {
+        this.emitHeartbeat?.({
+          type: 'PROVIDER_EXHAUSTED',
+          model: primaryModel,
+          error: error.message,
+        });
+        throw err;
+      }
 
       // model_not_found → hot-swap to fallback
       if (
@@ -94,7 +116,9 @@ export class GroqProvider {
           requestParams.response_format = params.response_format;
         }
 
-        const response = await this.client.chat.completions.create(requestParams);
+        const response = await this.circuitBreaker.execute(() =>
+          this.client.chat.completions.create(requestParams),
+        );
 
         const content = response.choices[0]?.message?.content ?? '';
 

@@ -78,7 +78,69 @@ export class KnowledgeGraph {
       metadata: triple.metadata ? JSON.stringify(triple.metadata) : null,
       created_at: triple.created_at,
     });
-    return result.lastInsertRowid as number;
+    const newId = result.lastInsertRowid as number;
+
+    // For critical relations: auto-resolve conflicts by role precedence
+    // (KNOWLEDGE_GRAPH.md §Consistency — lower-precedence triple gets valid_to set)
+    if (KnowledgeGraph.CRITICAL_RELATIONS.has(triple.relation)) {
+      this.resolveCriticalConflicts(triple, newId);
+    }
+
+    return newId;
+  }
+
+  /**
+   * After inserting a critical triple, find conflicting active triples
+   * (same subject + relation, different object) and apply role-precedence rules.
+   * Per KNOWLEDGE_GRAPH.md §Consistency Model §Conflict resolution is class-aware.
+   */
+  private resolveCriticalConflicts(newTriple: Omit<KGTriple, 'id'>, newId: number): void {
+    const today = new Date().toISOString().slice(0, 10);
+
+    const conflicts = this.db.prepare(`
+      SELECT * FROM triples
+      WHERE subject = @subject
+        AND relation = @relation
+        AND id != @newId
+        AND valid_from <= @today
+        AND (valid_to IS NULL OR valid_to > @today)
+    `).all({ subject: newTriple.subject, relation: newTriple.relation, today, newId }) as Array<Record<string, unknown>>;
+
+    if (conflicts.length === 0) return;
+
+    const newRole = this.extractRole(newTriple.agent_id);
+    const newPrec = ROLE_PRECEDENCE[newRole] ?? 0;
+
+    for (const conflict of conflicts) {
+      const conflictRole = this.extractRole(conflict.agent_id as string);
+      const conflictPrec = ROLE_PRECEDENCE[conflictRole] ?? 0;
+
+      if (newPrec > conflictPrec) {
+        // New triple wins — invalidate the conflicting one
+        this.invalidateTriple(
+          conflict.id as number,
+          today,
+          `superseded by higher-precedence agent ${newTriple.agent_id} (${newRole} > ${conflictRole})`,
+        );
+      } else if (conflictPrec > newPrec) {
+        // Existing triple wins — invalidate the new one we just inserted
+        this.invalidateTriple(
+          newId,
+          today,
+          `blocked by higher-precedence agent ${conflict.agent_id as string} (${conflictRole} > ${newRole})`,
+        );
+      } else {
+        // Same role precedence — mark conflict_pending for human review
+        const meta = conflict.metadata ? JSON.parse(conflict.metadata as string) as Record<string, unknown> : {};
+        meta.conflict_pending = true;
+        this.db.prepare('UPDATE triples SET metadata = @metadata WHERE id = @id')
+          .run({ metadata: JSON.stringify(meta), id: conflict.id });
+        console.warn(
+          `[KG] conflict_pending on triple ${conflict.id as number}: ` +
+          `same role precedence (${newRole}) — human review required`,
+        );
+      }
+    }
   }
 
   /**

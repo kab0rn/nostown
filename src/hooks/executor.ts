@@ -1,6 +1,7 @@
 // NOS Town — Hook Executor with secure variable substitution
 
 import type { Hook, BeadEvent } from '../types/index.js';
+import { sanitizeHookValue } from '../hardening/sanitize.js';
 
 // Allow-list of substitutable variable paths to prevent injection
 const ALLOWED_VAR_PATHS = new Set([
@@ -52,7 +53,16 @@ function substituteInPayload(
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(payload)) {
     if (typeof value === 'string') {
-      result[key] = substituteVars(value, event);
+      const substituted = substituteVars(value, event);
+      // Sanitize substituted value — blocks shell metacharacters and injection patterns
+      // (HARDENING.md §Pillar 3 §3.3, HOOK_SCHEMA.md §Variable Substitution)
+      const sanitized = sanitizeHookValue(substituted);
+      if (sanitized === null) {
+        console.warn(`[HookExecutor] Sanitization blocked value for key '${key}' — replaced with empty string`);
+        result[key] = '';
+      } else {
+        result[key] = sanitized;
+      }
     } else if (value && typeof value === 'object' && !Array.isArray(value)) {
       result[key] = substituteInPayload(value as Record<string, unknown>, event);
     } else {

@@ -224,13 +224,21 @@ export class Historian {
       const playbook = await this.generatePlaybook(taskType, samples, bestModel);
       if (!playbook) continue;
 
-      // Store playbook in MemPalace hall_advice
+      // Store playbook in MemPalace hall_advice with freshness metadata
+      // (success_rate + sample_size required by ROUTING.md §Playbook Freshness Guard)
+      const playbookWithMeta = {
+        ...playbook,
+        success_rate: successRate,
+        sample_size: stats.success + stats.fail,
+        last_updated: new Date().toISOString(),
+      };
+
       try {
         await this.palace.addDrawer(
           `wing_rig_${rigName}`,
           'hall_advice',
           `playbook_${taskType}`,
-          this.stripPii(JSON.stringify(playbook)),
+          this.stripPii(JSON.stringify(playbookWithMeta)),
           `playbook ${taskType} ${bestModel}`,
         );
       } catch (err) {

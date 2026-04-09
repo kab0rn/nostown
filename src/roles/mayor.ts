@@ -119,12 +119,17 @@ export class Mayor {
     try {
       const search = await this.palace.search(task.description, `wing_rig_${this.rigName}`, 'hall_advice');
       if (search.results.length > 0) {
-        const freshness = await this.checkPlaybookFreshness(task.description, task.task_type ?? 'execute');
+        const playbookContent = search.results[0].content;
+        const freshness = await this.checkPlaybookFreshness(
+          task.description,
+          task.task_type ?? 'execute',
+          playbookContent,
+        );
         if (freshness.isFresh) {
-          playbookHint = `Relevant playbook: ${search.results[0].content.slice(0, 500)}`;
+          playbookHint = `Relevant playbook: ${playbookContent.slice(0, 500)}`;
         } else {
           // Attach as advisory context only — routing NOT locked to primary
-          playbookHint = `[Advisory only — ${freshness.reason}] ${search.results[0].content.slice(0, 300)}`;
+          playbookHint = `[Advisory only — ${freshness.reason}] ${playbookContent.slice(0, 300)}`;
           console.log(`[Mayor:${this.agentId}] Playbook freshness check failed: ${freshness.reason}`);
         }
       }
@@ -284,7 +289,29 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
   private async checkPlaybookFreshness(
     description: string,
     taskType: string,
+    playbookContent?: string,
   ): Promise<{ isFresh: boolean; reason?: string }> {
+    // 0. Check success_rate >= 90% and sample_size >= 20 from Drawer metadata
+    // Per ROUTING.md §Playbook Freshness Guard — both conditions are required
+    if (playbookContent) {
+      try {
+        const pb = JSON.parse(playbookContent) as Record<string, unknown>;
+        if (typeof pb.success_rate === 'number' && pb.success_rate < 0.9) {
+          return {
+            isFresh: false,
+            reason: `success_rate ${(pb.success_rate * 100).toFixed(0)}% is below 90% threshold`,
+          };
+        }
+        if (typeof pb.sample_size === 'number' && pb.sample_size < 20) {
+          return {
+            isFresh: false,
+            reason: `sample_size ${pb.sample_size} is below minimum of 20`,
+          };
+        }
+      } catch {
+        // Content isn't JSON or missing metadata — proceed to other checks
+      }
+    }
     const cutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
     // 1. Search hall_events for Witness rejections in last 14 days
