@@ -183,3 +183,45 @@ Before NOS Town v1.0 ships, all of the following MUST have passing tests:
 - [KNOWLEDGE_GRAPH.md](./KNOWLEDGE_GRAPH.md) — KG sync protocol, MIM conflict resolution, consistency model
 - [HOOK_SCHEMA.md](./HOOK_SCHEMA.md) — Gas Town Bead and Hook wire format reference
 - [GROQ_INTEGRATION.md](./GROQ_INTEGRATION.md) — SDK setup, rate limit handling, error codes
+
+
+---
+
+## Pillar 4: The Safeguard Sentry (Real-time Security)
+
+To prevent agents from introducing vulnerabilities or leaking sensitive data, the **Safeguard** role (`openai/gpt-oss-safeguard-20b`) acts as a mandatory middleware for all file writes and external API calls.
+
+### 4.1 Mandatory Write-Scan
+
+Every `FILE_WRITE` action must be intercepted by the Safeguard:
+
+1. **Interception**: The Mayor dispatches the `FILE_WRITE` bead to the Safeguard first.
+2. **Analysis**: The Safeguard scans the diff for:
+   - Hardcoded secrets (API keys, tokens).
+   - Insecure patterns (SQL injection, shell execution).
+   - Logic smells (unauthorized access checks).
+3. **Approval**:
+   - `APPROVED`: The Safeguard forwards the convoy to the target role (or executor).
+   - `REJECTED`: The Safeguard emits a `SECURITY_VIOLATION` event and blocks the write.
+
+### 4.2 Vulnerability Memory (Palace Wing)
+
+The Safeguard maintains a dedicated MemPalace Wing (`wing_safeguard`) containing:
+- **Known Vulnerabilities**: Patterns identified in previous sessions that led to failures.
+- **Trusted Patches**: Examples of secure fixes for common issues.
+- **Violation History**: A per-role score of security violations to detect "drifting" agents.
+
+### 4.3 Safeguard Ruleset (JSONL)
+
+```jsonl
+{"id": "rule_no_secrets", "severity": "CRITICAL", "pattern": "/(gsk_|sk-|AIza)[a-zA-Z0-9_-]+/"}
+{"id": "rule_no_eval", "severity": "HIGH", "pattern": "/eval\(|new Function\(/"}
+{"id": "rule_no_shell", "severity": "HIGH", "pattern": "/child_process\.exec\(|spawn\('/"}
+```
+
+---
+
+## See Also
+- [RESILIENCE.md](./RESILIENCE.md) — For endpoint failover.
+- [ROUTING.md](./ROUTING.md) — For model-specific safety overrides.
+- [BUILDING.md](./BUILDING.md) — Setup guide for the Safeguard sidecar.
