@@ -4,6 +4,7 @@ import Groq from 'groq-sdk';
 import type { ChatCompletionCreateParamsNonStreaming } from 'groq-sdk/resources/chat/completions.js';
 import type { InferenceParams, HeartbeatEvent } from '../types/index.js';
 import { getModelForRole, getFallbackModel, getTokenLimitForRole } from './models.js';
+import { groqApiErrors, beadLatencyMs } from '../telemetry/metrics.js';
 
 export type HeartbeatEmitter = (event: HeartbeatEvent) => void;
 
@@ -77,6 +78,7 @@ export class GroqProvider {
   ): Promise<string> {
     let lastError: Error | null = null;
     let temperature = params.temperature ?? 0.7;
+    const inferenceStart = Date.now();
 
     for (let attempt = 0; attempt < DEFAULT_MAX_RETRIES; attempt++) {
       try {
@@ -108,7 +110,8 @@ export class GroqProvider {
           }
         }
 
-        // Success — emit recovery if we had previous errors
+        // Success — record latency and emit recovery if we had previous errors
+        beadLatencyMs.record(Date.now() - inferenceStart, { model, role: params.role });
         if (lastError !== null) {
           this.emitHeartbeat?.({
             type: 'PROVIDER_RECOVERED',
@@ -139,6 +142,7 @@ export class GroqProvider {
 
         // 429 → exponential backoff
         if (error.status === 429 || (error.message && error.message.includes('rate_limit'))) {
+          groqApiErrors.add(1, { model, type: '429' });
           const delay = backoffMs(attempt);
           console.warn(`[GroqProvider] Rate limited (attempt ${attempt + 1}/${DEFAULT_MAX_RETRIES}), backing off ${delay}ms`);
           await sleep(delay);
@@ -147,6 +151,7 @@ export class GroqProvider {
         }
 
         // Other errors — retry with backoff
+        groqApiErrors.add(1, { model, type: 'error' });
         const delay = backoffMs(attempt);
         console.warn(`[GroqProvider] Error on attempt ${attempt + 1}/${DEFAULT_MAX_RETRIES}: ${error.message}, retrying in ${delay}ms`);
         await sleep(delay);

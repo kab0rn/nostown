@@ -15,8 +15,8 @@ const TODAY = new Date().toISOString().slice(0, 10);
 beforeAll(() => {
   kg = new KnowledgeGraph(TEST_KG);
 
-  // Seed some triples
-  kgInsert(kg, { subject: 'llama-3.1-8b', relation: 'locked_to', object: 'unit_test', agent_id: 'historian' });
+  // Seed some triples (critical relations require metadata.class per KNOWLEDGE_GRAPH.md §Consistency)
+  kgInsert(kg, { subject: 'llama-3.1-8b', relation: 'locked_to', object: 'unit_test', agent_id: 'historian', metadata: { class: 'critical' } });
   kgInsert(kg, { subject: 'llama-3.1-8b', relation: 'succeeds_at', object: 'documentation', agent_id: 'historian' });
   kgInsert(kg, { subject: 'unit_test', relation: 'part_of', object: 'ci_pipeline', agent_id: 'witness' });
   kgInsert(kg, { subject: 'ci_pipeline', relation: 'blocks', object: 'deploy', agent_id: 'mayor' });
@@ -52,6 +52,7 @@ describe('kgQuery', () => {
       object: 'future_task',
       agent_id: 'historian',
       valid_from: '2099-01-01',
+      metadata: { class: 'critical' },
     });
 
     const pastTriples = kgQuery(kg, { subject: 'future-model', as_of: TODAY });
@@ -114,6 +115,7 @@ describe('kgInvalidate', () => {
       relation: 'locked_to',
       object: 'old_task',
       agent_id: 'historian',
+      metadata: { class: 'critical' },
     });
 
     const before = kgQuery(kg, { subject: 'to-invalidate', relation: 'locked_to' });

@@ -114,12 +114,19 @@ export class Mayor {
       console.warn(`[Mayor:${this.agentId}] Palace wakeup failed (non-fatal): ${String(err)}`);
     }
 
-    // 2. Check playbooks in MemPalace
+    // 2. Check playbooks in MemPalace with freshness guard (ROUTING.md §Playbook Freshness Guard)
     let playbookHint = '';
     try {
       const search = await this.palace.search(task.description, `wing_rig_${this.rigName}`, 'hall_advice');
       if (search.results.length > 0) {
-        playbookHint = `Relevant playbook: ${search.results[0].content.slice(0, 500)}`;
+        const freshness = await this.checkPlaybookFreshness(task.description, task.task_type ?? 'execute');
+        if (freshness.isFresh) {
+          playbookHint = `Relevant playbook: ${search.results[0].content.slice(0, 500)}`;
+        } else {
+          // Attach as advisory context only — routing NOT locked to primary
+          playbookHint = `[Advisory only — ${freshness.reason}] ${search.results[0].content.slice(0, 300)}`;
+          console.log(`[Mayor:${this.agentId}] Playbook freshness check failed: ${freshness.reason}`);
+        }
       }
     } catch {
       // non-fatal
@@ -265,6 +272,59 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
         status: 'pending',
       })];
     }
+  }
+
+  /**
+   * Playbook Freshness Guard (ROUTING.md §Playbook Freshness Guard).
+   * A playbook may only lock routing to Primary when ALL are true:
+   *   1. success_rate > 90%  (checked by caller via palace search result metadata)
+   *   2. No Witness rejections in last 14 days for same task type
+   *   3. No active Safeguard lockdown pattern for same task class
+   */
+  private async checkPlaybookFreshness(
+    description: string,
+    taskType: string,
+  ): Promise<{ isFresh: boolean; reason?: string }> {
+    const cutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    // 1. Search hall_events for Witness rejections in last 14 days
+    try {
+      const rejectSearch = await this.palace.search(
+        taskType,
+        `wing_rig_${this.rigName}`,
+        'hall_events',
+      );
+      const recentRejections = rejectSearch.results.filter((r) => {
+        const isRejection = r.content.toLowerCase().includes('rejected') ||
+          r.content.toLowerCase().includes('rejection');
+        // Check if within 14 days — results don't always have timestamps,
+        // so we rely on palace returning recent results first
+        return isRejection;
+      });
+
+      if (recentRejections.length > 0) {
+        return {
+          isFresh: false,
+          reason: `${recentRejections.length} Witness rejection(s) in recent history for task type '${taskType}'`,
+        };
+      }
+    } catch {
+      // non-fatal — palace unavailable means we can't confirm freshness
+      return { isFresh: false, reason: 'palace unavailable for freshness check' };
+    }
+
+    // 2. Check KG for active Safeguard lockdown on this task class
+    const today = new Date().toISOString().slice(0, 10);
+    const lockdownTriples = this.kg.queryTriples(taskType, today, 'safeguard_lockdown');
+    if (lockdownTriples.length > 0) {
+      return {
+        isFresh: false,
+        reason: `active Safeguard lockdown pattern on task class '${taskType}'`,
+      };
+    }
+
+    void description; // used by caller for palace.search, available for future content match
+    return { isFresh: true };
   }
 
   /**

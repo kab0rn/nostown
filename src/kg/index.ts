@@ -45,7 +45,25 @@ export class KnowledgeGraph {
     `);
   }
 
+  /**
+   * Critical relations that MUST carry metadata.class per KNOWLEDGE_GRAPH.md §Consistency Model.
+   * Writes without this field would produce ghost triples that bypass role-precedence resolution.
+   */
+  private static readonly CRITICAL_RELATIONS = new Set([
+    'locked_to', 'demoted_from', 'owned_by', 'safeguard_lockdown',
+  ]);
+
   addTriple(triple: Omit<KGTriple, 'id'>): number {
+    // Enforce metadata.class on critical relations (HARDENING.md §2.2, KNOWLEDGE_GRAPH.md §Consistency)
+    if (KnowledgeGraph.CRITICAL_RELATIONS.has(triple.relation)) {
+      const cls = (triple.metadata as Record<string, unknown> | undefined)?.class;
+      if (!cls) {
+        throw new Error(
+          `KG write error: relation '${triple.relation}' is critical and requires metadata.class`,
+        );
+      }
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO triples (subject, relation, object, valid_from, valid_to, agent_id, metadata, created_at)
       VALUES (@subject, @relation, @object, @valid_from, @valid_to, @agent_id, @metadata, @created_at)

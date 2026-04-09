@@ -4,6 +4,7 @@ import { GroqProvider } from '../groq/provider.js';
 import { Ledger } from '../ledger/index.js';
 import { MemPalaceClient } from '../mempalace/client.js';
 import type { Bead, InferenceParams, HeartbeatEvent } from '../types/index.js';
+import { beadThroughput } from '../telemetry/metrics.js';
 
 export type HeartbeatEmitter = (event: HeartbeatEvent) => void;
 
@@ -150,6 +151,7 @@ export class Polecat {
         console.warn(`[Polecat:${this.agentId}] MemPalace result write failed: ${String(err)}`);
       }
 
+      beadThroughput.add(1, { role: bead.role, task_type: bead.task_type });
       this.activeBead = null;
       return done;
     } catch (err) {

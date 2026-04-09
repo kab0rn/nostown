@@ -31,10 +31,17 @@ export class Historian {
 
   /**
    * Nightly Historian pipeline:
-   * 1. Export beads from ledger
-   * 2. Mine patterns into palace halls
-   * 3. Generate playbooks for repeated task types
+   * 1. Export beads from ledger into classified MemPalace halls
+   * 2. Mine patterns
+   * 3. Generate playbooks for high-success task types
    * 4. Update KG routing triples
+   *
+   * HISTORIAN.md §Implementation Detail: auto-classify beads into:
+   *   hall_facts        — permanent config/team truths
+   *   hall_events       — session milestones (all resolved beads)
+   *   hall_discoveries  — BLOCKED resolutions and novel findings
+   *   hall_preferences  — model routing preferences
+   *   hall_advice       — Playbooks (validated strategies)
    */
   async runNightly(rigName: string): Promise<void> {
     console.log(`[Historian:${this.agentId}] Starting nightly run for rig: ${rigName}`);
@@ -45,8 +52,8 @@ export class Historian {
       return;
     }
 
-    // 1. Export beads to MemPalace drawers
-    await this.exportBeads(rigName, beads);
+    // 1. Export beads to classified MemPalace halls (with PII stripping)
+    await this.classifyBeadsToHalls(rigName, beads);
 
     // 2. Mine patterns
     const patterns = this.minePatterns(beads);
@@ -68,6 +75,75 @@ export class Historian {
     }
 
     console.log(`[Historian:${this.agentId}] Nightly run complete`);
+  }
+
+  /**
+   * PII stripping: removes tokens that look like secrets, emails, or API keys
+   * before writing bead content to MemPalace or the KG.
+   * Per HISTORIAN.md: PII-stripping MUST run before any mining write.
+   */
+  private stripPii(text: string): string {
+    return text
+      // API keys / bearer tokens (common formats)
+      .replace(/\b(sk-|gsk_|Bearer\s+)[A-Za-z0-9._-]{10,}/g, '[REDACTED_KEY]')
+      // Email addresses
+      .replace(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g, '[REDACTED_EMAIL]')
+      // Generic long hex / base64 tokens (32+ chars)
+      .replace(/[A-Za-z0-9+/=]{32,}/g, '[REDACTED_TOKEN]');
+  }
+
+  /**
+   * Classify beads into the correct MemPalace halls.
+   * Per HISTORIAN.md §Implementation Detail — hall mapping:
+   *   hall_events       → all resolved beads (session milestones)
+   *   hall_discoveries  → beads that were BLOCKED before resolving (novel unblocking)
+   *   hall_preferences  → beads that inform model routing (SUCCESS + high-success model)
+   *   hall_facts        → task types with a very high win rate (team truths)
+   */
+  private async classifyBeadsToHalls(rigName: string, beads: Bead[]): Promise<void> {
+    const wing = `wing_rig_${rigName}`;
+    const done = beads.filter((b) => b.status === 'done' || b.outcome === 'SUCCESS');
+
+    // Limit to most recent 100 to avoid palace saturation
+    for (const bead of done.slice(-100)) {
+      const rawContent = JSON.stringify({
+        bead_id: bead.bead_id,
+        task_type: bead.task_type,
+        model: bead.model,
+        outcome: bead.outcome,
+        duration_ms: bead.metrics?.duration_ms,
+        task_description: bead.task_description?.slice(0, 200),
+      });
+      const content = this.stripPii(rawContent);
+      const embedding = `${bead.task_type} ${bead.outcome ?? ''} ${bead.model}`;
+
+      try {
+        // Always write to hall_events (session milestone)
+        await this.palace.addDrawer(wing, 'hall_events', bead.bead_id, content, embedding);
+
+        // hall_discoveries: beads that had a blocked predecessor before resolving
+        if (bead.needs && bead.needs.length > 0 && bead.outcome === 'SUCCESS') {
+          await this.palace.addDrawer(
+            wing, 'hall_discoveries',
+            `discovery_${bead.bead_id}`,
+            content,
+            `unblocked ${bead.task_type}`,
+          );
+        }
+
+        // hall_preferences: successful beads inform model preference
+        if (bead.outcome === 'SUCCESS' && bead.model) {
+          await this.palace.addDrawer(
+            wing, 'hall_preferences',
+            `pref_${bead.model}_${bead.task_type}`,
+            JSON.stringify({ model: bead.model, task_type: bead.task_type, outcome: 'SUCCESS' }),
+            `preference ${bead.model} ${bead.task_type}`,
+          );
+        }
+      } catch {
+        // non-fatal — individual classification failure should not abort the pipeline
+      }
+    }
   }
 
   private async exportBeads(rigName: string, beads: Bead[]): Promise<void> {
@@ -154,11 +230,26 @@ export class Historian {
           `wing_rig_${rigName}`,
           'hall_advice',
           `playbook_${taskType}`,
-          JSON.stringify(playbook),
+          this.stripPii(JSON.stringify(playbook)),
           `playbook ${taskType} ${bestModel}`,
         );
       } catch (err) {
         console.warn(`[Historian] Playbook write failed: ${String(err)}`);
+      }
+
+      // hall_facts: task types with >= 95% success rate are team truths
+      if (successRate >= 0.95 && (stats.success + stats.fail) >= 20) {
+        try {
+          await this.palace.addDrawer(
+            `wing_rig_${rigName}`,
+            'hall_facts',
+            `fact_${taskType}`,
+            JSON.stringify({ task_type: taskType, best_model: bestModel, success_rate: successRate }),
+            `proven pattern ${taskType}`,
+          );
+        } catch {
+          // non-fatal
+        }
       }
 
       // Write KG triple for playbook publication

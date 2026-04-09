@@ -6,6 +6,7 @@ import type { ConvoyMessage } from '../types/index.js';
 import { loadPublicKey } from './sign.js';
 import { validateConvoy } from './verify.js';
 import { auditLog } from '../hardening/audit.js';
+import { convoyDeliveryFailure, convoyAuthzDenied } from '../telemetry/metrics.js';
 
 const QUARANTINE_DIR = process.env.NOS_QUARANTINE_DIR ?? 'nos/quarantine';
 
@@ -161,6 +162,10 @@ export class ConvoyBus {
       if (!result.ok) {
         console.error(`[ConvoyBus] Convoy validation failed for ${file}: ${result.reason}`);
         auditLog('CONVOY_QUARANTINED', convoy.header.sender_id, convoy.header.recipient, result.reason);
+        convoyDeliveryFailure.add(1, { sender: convoy.header.sender_id, reason: result.reason });
+        if (result.reason === 'AUTHZ_DENIED' || result.reason === 'AUTHN_FAILED') {
+          convoyAuthzDenied.add(1, { sender: convoy.header.sender_id });
+        }
         this.quarantine(filePath, result.reason);
         continue;
       }
