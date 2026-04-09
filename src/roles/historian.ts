@@ -4,6 +4,7 @@ import { Ledger } from '../ledger/index.js';
 import { KnowledgeGraph } from '../kg/index.js';
 import { MemPalaceClient } from '../mempalace/client.js';
 import { GroqProvider } from '../groq/provider.js';
+import { GroqBatchClient } from '../groq/batch.js';
 import type { Bead, InferenceParams, PlaybookEntry } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -12,6 +13,12 @@ export interface HistorianConfig {
   groqApiKey?: string;
   palaceUrl?: string;
   kgPath?: string;
+  /**
+   * Optional Groq Batch client for cost-efficient 70B playbook synthesis.
+   * Per GROQ_INTEGRATION.md §Batch API: 50% cost reduction for nightly runs.
+   * If not provided, falls back to sequential real-time inference.
+   */
+  batchClient?: GroqBatchClient;
 }
 
 export class Historian {
@@ -20,6 +27,7 @@ export class Historian {
   private kg: KnowledgeGraph;
   private palace: MemPalaceClient;
   private provider: GroqProvider;
+  private batchClient: GroqBatchClient | null;
 
   constructor(config: HistorianConfig) {
     this.agentId = config.agentId;
@@ -27,6 +35,7 @@ export class Historian {
     this.kg = new KnowledgeGraph(config.kgPath);
     this.palace = new MemPalaceClient(config.palaceUrl);
     this.provider = new GroqProvider(config.groqApiKey);
+    this.batchClient = config.batchClient ?? null;
   }
 
   /**
@@ -214,35 +223,42 @@ export class Historian {
     patterns: Map<string, { success: number; fail: number; models: Map<string, number> }>,
     beads: Bead[],
   ): Promise<void> {
-    // Generate playbooks for task types with >= 3 successes
+    // Collect eligible task types
+    type TaskContext = { taskType: string; stats: { success: number; fail: number; models: Map<string, number> }; successRate: number; bestModel: string; samples: (string | undefined)[] };
+    const eligible: TaskContext[] = [];
+
     for (const [taskType, stats] of patterns.entries()) {
       if (stats.success < 3) continue;
-
       const successRate = stats.success / (stats.success + stats.fail);
       if (successRate < 0.7) continue;
 
-      // Find the best performing model
       let bestModel = '';
       let bestCount = 0;
       for (const [model, count] of stats.models.entries()) {
-        if (count > bestCount) {
-          bestModel = model;
-          bestCount = count;
-        }
+        if (count > bestCount) { bestModel = model; bestCount = count; }
       }
 
-      // Sample a few successful beads for this task type
       const samples = beads
         .filter((b) => b.task_type === taskType && b.outcome === 'SUCCESS')
         .slice(-3)
         .map((b) => b.task_description)
         .filter(Boolean);
 
-      const playbook = await this.generatePlaybook(taskType, samples, bestModel);
-      if (!playbook) continue;
+      eligible.push({ taskType, stats, successRate, bestModel, samples });
+    }
 
-      // Store playbook in MemPalace hall_advice with freshness metadata
-      // (success_rate + sample_size required by ROUTING.md §Playbook Freshness Guard)
+    if (eligible.length === 0) return;
+
+    // Use Batch API when available (50% cost reduction per GROQ_INTEGRATION.md §Batch API)
+    // Fall back to sequential real-time inference when batchClient not configured
+    const playbookResults = this.batchClient && eligible.length >= 2
+      ? await this.generatePlaybooksBatch(eligible)
+      : await this.generatePlaybooksSequential(eligible);
+
+    for (const { ctx, playbook } of playbookResults) {
+      if (!playbook) continue;
+      const { taskType, stats, successRate, bestModel } = ctx;
+
       const playbookWithMeta = {
         ...playbook,
         success_rate: successRate,
@@ -262,7 +278,6 @@ export class Historian {
         console.warn(`[Historian] Playbook write failed: ${String(err)}`);
       }
 
-      // hall_facts: task types with >= 95% success rate are team truths
       if (successRate >= 0.95 && (stats.success + stats.fail) >= 20) {
         try {
           await this.palace.addDrawer(
@@ -272,12 +287,9 @@ export class Historian {
             JSON.stringify({ task_type: taskType, best_model: bestModel, success_rate: successRate }),
             `proven pattern ${taskType}`,
           );
-        } catch {
-          // non-fatal
-        }
+        } catch { /* non-fatal */ }
       }
 
-      // Write KG triple for playbook publication
       const today = new Date().toISOString().slice(0, 10);
       this.kg.addTriple({
         subject: `rig_${rigName}`,
@@ -288,6 +300,85 @@ export class Historian {
         metadata: { class: 'advisory', task_type: taskType, success_rate: successRate },
         created_at: new Date().toISOString(),
       });
+    }
+  }
+
+  /** Sequential (real-time) playbook generation — fallback when no batch client */
+  private async generatePlaybooksSequential(
+    eligible: Array<{ taskType: string; stats: { success: number; fail: number; models: Map<string, number> }; successRate: number; bestModel: string; samples: (string | undefined)[] }>,
+  ): Promise<Array<{ ctx: (typeof eligible)[number]; playbook: PlaybookEntry | null }>> {
+    const results: Array<{ ctx: (typeof eligible)[number]; playbook: PlaybookEntry | null }> = [];
+    for (const ctx of eligible) {
+      const playbook = await this.generatePlaybook(ctx.taskType, ctx.samples, ctx.bestModel);
+      results.push({ ctx, playbook });
+    }
+    return results;
+  }
+
+  /**
+   * Batch (70B) playbook synthesis via Groq Batch API.
+   * (GROQ_INTEGRATION.md §Batch API — 50% cost reduction for nightly synthesis)
+   * Submits all playbook generation requests as a single batch job,
+   * waits for completion, and distills JSONL output into PlaybookEntry objects.
+   */
+  private async generatePlaybooksBatch(
+    eligible: Array<{ taskType: string; stats: { success: number; fail: number; models: Map<string, number> }; successRate: number; bestModel: string; samples: (string | undefined)[] }>,
+  ): Promise<Array<{ ctx: (typeof eligible)[number]; playbook: PlaybookEntry | null }>> {
+    if (!this.batchClient) return this.generatePlaybooksSequential(eligible);
+
+    // Build batch requests — one per eligible task type
+    const requests = eligible.map((ctx) => ({
+      custom_id: ctx.taskType,
+      method: 'POST' as const,
+      url: '/v1/chat/completions' as const,
+      body: {
+        model: 'llama-3.3-70b-versatile', // 70B for synthesis quality
+        messages: [
+          {
+            role: 'system' as const,
+            content: 'Generate a concise playbook for a task type. Output JSON: { "title": string, "steps": [string], "tips": [string] }',
+          },
+          {
+            role: 'user' as const,
+            content: `Task type: ${ctx.taskType}\nBest model: ${ctx.bestModel}\nExample tasks:\n${ctx.samples.filter(Boolean).join('\n')}`,
+          },
+        ],
+        temperature: 0.3,
+      },
+    }));
+
+    try {
+      console.log(`[Historian] Starting Batch API synthesis for ${requests.length} playbooks`);
+      const batchResults = await this.batchClient.runBatch(requests);
+
+      // Map results back to eligible contexts
+      const resultMap = new Map(batchResults.map((r) => [r.custom_id, r]));
+      return eligible.map((ctx) => {
+        const result = resultMap.get(ctx.taskType);
+        if (!result?.response?.body?.choices?.[0]?.message.content) {
+          return { ctx, playbook: null };
+        }
+        try {
+          const parsed = JSON.parse(result.response.body.choices[0].message.content) as {
+            title?: string;
+            steps?: string[];
+          };
+          const playbook: PlaybookEntry = {
+            id: uuidv4().slice(0, 8),
+            title: String(parsed.title ?? ctx.taskType),
+            task_type: ctx.taskType,
+            steps: Array.isArray(parsed.steps) ? parsed.steps.map(String) : [],
+            model_hint: ctx.bestModel,
+            created_at: new Date().toISOString(),
+          };
+          return { ctx, playbook };
+        } catch {
+          return { ctx, playbook: null };
+        }
+      });
+    } catch (err) {
+      console.warn(`[Historian] Batch synthesis failed, falling back to sequential: ${String(err)}`);
+      return this.generatePlaybooksSequential(eligible);
     }
   }
 
