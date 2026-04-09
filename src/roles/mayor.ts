@@ -130,11 +130,33 @@ export class Mayor {
       console.warn(`[Mayor:${this.agentId}] Palace wakeup failed (non-fatal): ${String(err)}`);
     }
 
-    // 2. Check playbooks in MemPalace with freshness guard (ROUTING.md §Playbook Freshness Guard)
+    // 2. Query cross-rig tunnels for enriched playbook search (ROUTING.md §Cross-Rig Routing)
+    const tunnelWings: string[] = [`wing_rig_${this.rigName}`];
+    try {
+      const tunnels = await this.palace.getTunnels();
+      const myWing = `wing_rig_${this.rigName}`;
+      for (const t of tunnels) {
+        if (t.wing_a === myWing && !tunnelWings.includes(t.wing_b)) tunnelWings.push(t.wing_b);
+        if (t.wing_b === myWing && !tunnelWings.includes(t.wing_a)) tunnelWings.push(t.wing_a);
+      }
+    } catch {
+      // palace unavailable — use local wing only
+    }
+
+    // 3. Check playbooks in MemPalace with freshness guard (ROUTING.md §Playbook Freshness Guard)
+    // Search all tunnel-connected wings for cross-rig playbooks
     let playbookHint = '';
     let activePlaybook: PlaybookEntry | undefined;
     try {
-      const search = await this.palace.search(task.description, `wing_rig_${this.rigName}`, 'hall_advice');
+      // Search primary wing first, then tunnel wings if no fresh result found
+      let searchResult = await this.palace.search(task.description, tunnelWings[0], 'hall_advice');
+      if (searchResult.results.length === 0 && tunnelWings.length > 1) {
+        for (const wing of tunnelWings.slice(1)) {
+          searchResult = await this.palace.search(task.description, wing, 'hall_advice');
+          if (searchResult.results.length > 0) break;
+        }
+      }
+      const search = searchResult;
       if (search.results.length > 0) {
         const playbookContent = search.results[0].content;
         const freshness = await this.checkPlaybookFreshness(

@@ -218,6 +218,18 @@ export class MemPalaceClient {
   }
 
   /**
+   * Register a cross-rig tunnel between two wings for a shared room.
+   * Called by Historian when it detects the same room name in multiple wings.
+   */
+  async registerTunnel(wingA: string, wingB: string, roomName: string): Promise<void> {
+    await this.request<void>('POST', '/palace/tunnels', {
+      wing_a: wingA,
+      wing_b: wingB,
+      room_name: roomName,
+    });
+  }
+
+  /**
    * Save an agent checkpoint (plan) to MemPalace.
    * Returns the checkpoint ID for use in BEAD_DISPATCH.
    * Uses /palace/checkpoint dedicated endpoint.

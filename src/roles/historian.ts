@@ -78,7 +78,10 @@ export class Historian {
     // 5. Update KG routing based on model performance
     await this.updateRoutingKG(patterns);
 
-    // 6. Write diary entry
+    // 6. Detect cross-rig tunnel-eligible rooms (ROUTING.md §Cross-Rig Routing)
+    await this.detectAndRegisterTunnels(rigName);
+
+    // 7. Write diary entry
     try {
       await this.palace.diaryWrite(
         'wing_historian',
@@ -559,6 +562,71 @@ export class Historian {
     ].join('\n');
 
     return header + lines.join('\n');
+  }
+
+  /**
+   * Detect cross-rig tunnel-eligible rooms and register them.
+   * (ROUTING.md §Cross-Rig Routing Acceleration)
+   * Compares room names in the current rig's wing against other known wings.
+   * Rooms appearing in ≥2 wings are eligible for tunnel registration.
+   */
+  private async detectAndRegisterTunnels(rigName: string): Promise<void> {
+    try {
+      // Get rooms in this rig's wing
+      const myWing = `wing_rig_${rigName}`;
+      const myRooms = await this.palace.listRooms(myWing);
+      const myRoomNames = new Set(myRooms.map((r) => r.id));
+
+      // Get existing tunnels to avoid duplicates
+      const existingTunnels = await this.palace.getTunnels();
+      const existingKeys = new Set(
+        existingTunnels.map((t) => `${t.wing_a}|${t.wing_b}|${t.room_name}`),
+      );
+
+      // Check KG for other known rig wings (stored as 'active' triples on wing subjects)
+      const today = new Date().toISOString().slice(0, 10);
+      const otherWings = this.kg.queryTriples('historian_wings', today, 'registered')
+        .map((t) => t.object)
+        .filter((w) => w !== myWing);
+
+      let registered = 0;
+      for (const otherWing of otherWings) {
+        try {
+          const otherRooms = await this.palace.listRooms(otherWing);
+          for (const room of otherRooms) {
+            if (myRoomNames.has(room.id)) {
+              const tunnelKey = `${myWing}|${otherWing}|${room.id}`;
+              const reverseKey = `${otherWing}|${myWing}|${room.id}`;
+              if (!existingKeys.has(tunnelKey) && !existingKeys.has(reverseKey)) {
+                await this.palace.registerTunnel(myWing, otherWing, room.id);
+                existingKeys.add(tunnelKey);
+                registered++;
+                console.log(`[Historian] Registered tunnel: ${room.id} between ${myWing} ↔ ${otherWing}`);
+              }
+            }
+          }
+        } catch {
+          // Other wing unavailable — skip
+        }
+      }
+
+      // Record this wing as known for future cross-rig discovery
+      this.kg.addTriple({
+        subject: 'historian_wings',
+        relation: 'registered',
+        object: myWing,
+        valid_from: today,
+        agent_id: this.agentId,
+        metadata: { class: 'advisory', room_count: String(myRoomNames.size) },
+        created_at: new Date().toISOString(),
+      });
+
+      if (registered > 0) {
+        console.log(`[Historian] Tunnel detection complete: ${registered} new tunnels registered`);
+      }
+    } catch (err) {
+      console.warn(`[Historian] Tunnel detection failed (non-fatal): ${String(err)}`);
+    }
   }
 
   close(): void {
