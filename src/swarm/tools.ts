@@ -182,6 +182,38 @@ export function swarmRebalanceLimits(
 export { DEFAULT_LIMITS as DEFAULT_IN_FLIGHT_LIMITS };
 
 /**
+ * Detect dependency cycles in a bead set via DFS topological sort.
+ * Per SWARM.md §1: Mayor MUST reject planning passes that contain cycles (DEPENDENCY_CYCLE).
+ * Returns array of cycle-forming bead IDs (non-empty = cycle detected), else empty array.
+ */
+export function detectCycles(beads: Bead[]): string[] {
+  const idSet = new Set(beads.map((b) => b.bead_id));
+  const WHITE = 0, GRAY = 1, BLACK = 2;
+  const color = new Map<string, number>();
+  for (const id of idSet) color.set(id, WHITE);
+
+  const cycle: string[] = [];
+
+  function dfs(id: string): boolean {
+    color.set(id, GRAY);
+    const bead = beads.find((b) => b.bead_id === id);
+    for (const dep of (bead?.needs ?? [])) {
+      if (!idSet.has(dep)) continue; // external reference — skip
+      const depColor = color.get(dep) ?? WHITE;
+      if (depColor === GRAY) { cycle.push(dep, id); return true; }
+      if (depColor === WHITE && dfs(dep)) return true;
+    }
+    color.set(id, BLACK);
+    return false;
+  }
+
+  for (const id of idSet) {
+    if ((color.get(id) ?? WHITE) === WHITE && dfs(id)) break;
+  }
+  return cycle;
+}
+
+/**
  * Check if a bead is a rendezvous node (has multiple prerequisites).
  */
 export function isRendezvousNode(bead: Bead): boolean {

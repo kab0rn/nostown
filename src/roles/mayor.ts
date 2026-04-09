@@ -10,7 +10,7 @@ import { loadPrivateKey } from '../convoys/sign.js';
 import { RoutingDispatcher } from '../routing/dispatch.js';
 import type { Bead, ConvoyMessage, InferenceParams, HeartbeatEvent, PlaybookEntry } from '../types/index.js';
 import { Ledger as LedgerClass } from '../ledger/index.js';
-import { DEFAULT_IN_FLIGHT_LIMITS, isRendezvousNode } from '../swarm/tools.js';
+import { DEFAULT_IN_FLIGHT_LIMITS, isRendezvousNode, detectCycles } from '../swarm/tools.js';
 import { v4 as uuidv4 } from 'uuid';
 
 export type HeartbeatEmitter = (event: HeartbeatEvent) => void;
@@ -208,7 +208,13 @@ export class Mayor {
     // 3. Decompose task into beads (pass activePlaybook for routing lock)
     const beads = await this.decompose(task, palaceContext, playbookHint, activePlaybook);
 
-    // 3b. CoVe: Chain-of-Verification — query KG timeline for past Witness rejections
+    // 3b. DEPENDENCY_CYCLE guard — topological sort (SWARM.md §1: MUST reject cycles)
+    const cycleNodes = detectCycles(beads);
+    if (cycleNodes.length > 0) {
+      throw new Error(`DEPENDENCY_CYCLE detected in bead plan: ${cycleNodes.join(' → ')}`);
+    }
+
+    // 3c. CoVe: Chain-of-Verification — query KG timeline for past Witness rejections
     // on rooms matching this task before finalising the plan (ROLES.md §Mayor step 9)
     let coveWarnings = '';
     try {
