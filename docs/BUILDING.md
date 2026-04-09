@@ -241,3 +241,162 @@ npx jest --testPathPattern=e2e
 - [GROQ_INTEGRATION.md](GROQ_INTEGRATION.md) — SDK setup, model selection matrix, Batch API
 - [ROUTING.md](ROUTING.md) — Escalation ladder and KG-backed routing
 - [FORK_STRATEGY.md](FORK_STRATEGY.md) — Gas Town upstream sync strategy
+
+
+---
+
+## Implementation Gates
+
+To ensure the gastown team can build a complete project plan, NOS Town's implementation is organized into sequential gates. Each gate must be completed and tested before moving to the next.
+
+### Gate 1: Foundation
+**Goal**: Get the core infrastructure running
+
+**Deliverables**:
+- [ ] MemPalace MCP server running (`palace serve`)
+- [ ] SQLite Knowledge Graph initialized with schema from [KNOWLEDGE_GRAPH.md](./KNOWLEDGE_GRAPH.md)
+- [ ] Groq SDK integration with preview/primary model selection (see [GROQ_INTEGRATION.md](./GROQ_INTEGRATION.md))
+- [ ] Gas Town CLI installed and bead ledger initialized
+
+**Test**: Create a test bead, resolve it with Groq, verify MemPalace stores the event
+
+**Files**: `src/mempalace/client.ts`, `src/groq/sdk.ts`, `palace/db/knowledge_graph.sqlite`, `package.json`
+
+---
+
+### Gate 2: Roles & Routing
+**Goal**: Implement the Mayor, Historian, and routing rules
+
+**Deliverables**:
+- [ ] Mayor role with model promotion logic (see [ROLES.md](./ROLES.md))
+- [ ] Historian role with event logging to MemPalace (see [HISTORIAN.md](./HISTORIAN.md))
+- [ ] Event routing rules from [ROUTING.md](./ROUTING.md) implemented in `src/routing/dispatch.ts`
+- [ ] Convoy bus for inter-role messaging (see [CONVOYS.md](./CONVOYS.md))
+
+**Test**: Mayor assigns a bead → Researcher resolves → Historian logs → Mayor promotes model
+
+**Files**: `src/roles/mayor.ts`, `src/roles/historian.ts`, `src/routing/dispatch.ts`, `src/convoy/bus.ts`
+
+---
+
+### Gate 3: Convoys & Mailboxes
+**Goal**: Enable Gas Town compatibility via mailbox files and convoy transport
+
+**Deliverables**:
+- [ ] Convoy signature generation and validation (see [CONVOYS.md](./CONVOYS.md))
+- [ ] Mailbox file format writer at `{BEADS_DIR}/mailboxes/{role}/inbox/*.json` (see [MAILBOXES.md](./MAILBOXES.md))
+- [ ] `gt mail check` compatibility for polling agents
+- [ ] Sequence number enforcement and replay attack prevention
+
+**Test**: Send a convoy → verify mailbox file written → Gas Town agent reads via `gt mail check`
+
+**Files**: `src/convoy/transport.ts`, `src/convoy/mailbox.ts`, `hooks/` directory
+
+---
+
+### Gate 4: Knowledge Graph Integration
+**Goal**: Use the KG for dependency tracking and state queries
+
+**Deliverables**:
+- [ ] Bead dependency graph stored as triples (see [KNOWLEDGE_GRAPH.md](./KNOWLEDGE_GRAPH.md))
+- [ ] MCP tools for KG queries: `kg_query`, `kg_insert`, `kg_traverse`
+- [ ] Swarm coordination using KG for prerequisite tracking (see [SWARM.md](./SWARM.md))
+- [ ] Circular dependency detection
+
+**Test**: Create a swarm with fork-join pattern → verify KG tracks dependencies → all beads resolve in correct order
+
+**Files**: `src/kg/client.ts`, `src/kg/tools.ts`, `palace/db/knowledge_graph.sqlite`
+
+---
+
+### Gate 5: Hooks & Gas Town Compatibility
+**Goal**: Load and execute .hook files for event-driven behaviors
+
+**Deliverables**:
+- [ ] Hook loader from `hooks/*.hook` files (see [HOOK_SCHEMA.md](./HOOK_SCHEMA.md))
+- [ ] Hook validation for required fields and action types
+- [ ] Variable substitution engine for `{{event.beadId}}` syntax
+- [ ] Hook execution with priority ordering
+- [ ] Action handlers for: MCP_TOOL, CONVOY, KG_QUERY, CUSTOM
+
+**Test**: Load a hook file → trigger event → verify hook executes and action dispatches
+
+**Files**: `src/hooks/loader.ts`, `src/hooks/validator.ts`, `src/hooks/executor.ts`, `hooks/` directory
+
+---
+
+### Gate 6: Resilience & Hardening
+**Goal**: Production-ready error handling and failover
+
+**Deliverables**:
+- [ ] Circuit breaker for Groq API (see [RESILIENCE.md](./RESILIENCE.md))
+- [ ] Exponential backoff retry logic
+- [ ] Fallback model cascade (preview → primary → fallback)
+- [ ] Input sanitization and validation (see [HARDENING.md](./HARDENING.md))
+- [ ] Audit logging for all sensitive operations
+
+**Test**: Simulate Groq API failure → verify circuit breaker opens → fallback model used → service continues
+
+**Files**: `src/resilience/circuit-breaker.ts`, `src/groq/fallback.ts`, `src/hardening/sanitize.ts`
+
+---
+
+### Gate 7: Swarm Workflows
+**Goal**: Multi-agent coordination patterns
+
+**Deliverables**:
+- [ ] Fork-join pattern implementation (see [SWARM.md](./SWARM.md))
+- [ ] Broadcast convoy support
+- [ ] Rendezvous bead waiting for multiple prerequisites
+- [ ] Swarm failure handling and recovery
+- [ ] MCP tools: `swarm_status`, `swarm_broadcast`
+
+**Test**: Execute a 10-bead swarm with parallel and sequential stages → verify all complete → no deadlocks
+
+**Files**: `src/swarm/coordinator.ts`, `src/swarm/tools.ts`
+
+---
+
+### Gate 8: Full Stack Test
+**Goal**: End-to-end verification of all components
+
+**Deliverables**:
+- [ ] All unit tests passing (see Testing Strategy section)
+- [ ] Integration test: Real MemPalace + Groq + Gas Town CLI
+- [ ] Load test: 100+ beads processed concurrently
+- [ ] Gas Town compatibility test: nostown and gastown agents interoperate
+- [ ] Documentation complete and reviewed
+
+**Test**: Run the full stack scenario from [FORK_STRATEGY.md](./FORK_STRATEGY.md) end-to-end
+
+**Files**: `tests/integration/`, `tests/e2e/`
+
+---
+
+## Implementation Order
+
+Follow this sequence for fastest path to working system:
+
+1. **Gate 1** (Foundation) — 2-3 days
+2. **Gate 2** (Roles & Routing) — 3-4 days
+3. **Gate 3** (Convoys & Mailboxes) — 2-3 days
+4. **Gate 4** (Knowledge Graph) — 3-4 days
+5. **Gate 5** (Hooks) — 2-3 days
+6. **Gate 6** (Resilience) — 2-3 days
+7. **Gate 7** (Swarm) — 3-4 days
+8. **Gate 8** (Full Stack Test) — 2-3 days
+
+**Total**: ~20-28 days for full implementation
+
+---
+
+## Progress Tracking
+
+Use the checkboxes in each gate to track implementation progress. All checkboxes must be complete before moving to the next gate.
+
+For each gate:
+1. Complete all deliverables
+2. Run the gate's test scenario
+3. Review files for code quality
+4. Check off all boxes
+5. Proceed to next gate
