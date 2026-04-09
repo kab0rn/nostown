@@ -79,3 +79,21 @@ Broadcasts a message to all roles. Used for priority overrides or global state c
 - [ROUTING.md](./ROUTING.md) — Event dispatch and backpressure
 - [HARDENING.md](./HARDENING.md) — Security and dependency enforcement
 - [OBSERVABILITY.md](./OBSERVABILITY.md) — Monitoring swarm health and stall rates
+
+
+---
+
+## 5. Swarm Recovery & Deadlock Resolution
+
+In addition to cycle detection, the Mayor has access to recovery tools to unstick stalled swarms:
+
+### `swarm_reset_bead(bead_id)`
+Forcefully resets a bead to `PENDING` and clears its `executor_id`. Used if an agent process crashes without updating the ledger.
+
+### `swarm_abort_workflow(workflow_id)`
+Immediately transitions all beads in a specific dependency tree to `ABORTED`. Used when a `POTENTIAL_DEADLOCK` is confirmed or a human operator intervenes.
+
+### `swarm_rebalance_limits()`
+Temporarily increases in-flight limits if the Mayor detects high throughput with low error rates (Adaptive Backpressure).
+
+---
