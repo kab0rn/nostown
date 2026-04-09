@@ -55,16 +55,30 @@ export class Historian {
     // 1. Export beads to classified MemPalace halls (with PII stripping)
     await this.classifyBeadsToHalls(rigName, beads);
 
-    // 2. Mine patterns
+    // 2. AAAK COMPRESS bead manifest for Mayor context loading
+    const manifest = this.generateAaakManifest(beads.slice(-500));
+    try {
+      await this.palace.addDrawer(
+        `wing_rig_${rigName}`,
+        'hall_facts',
+        'aaak_manifest',
+        manifest,
+        'aaak manifest bead summary',
+      );
+    } catch (err) {
+      console.warn(`[Historian] AAAK manifest write failed: ${String(err)}`);
+    }
+
+    // 3. Mine patterns
     const patterns = this.minePatterns(beads);
 
-    // 3. Generate playbooks for high-success task types
+    // 4. Generate playbooks for high-success task types
     await this.generatePlaybooks(rigName, patterns, beads);
 
-    // 4. Update KG routing based on model performance
+    // 5. Update KG routing based on model performance
     await this.updateRoutingKG(patterns);
 
-    // 5. Write diary entry
+    // 6. Write diary entry
     try {
       await this.palace.diaryWrite(
         'wing_historian',
@@ -414,6 +428,137 @@ export class Historian {
       console.log(`[Historian:${this.agentId}] Backfill complete: ${backfilled}/${done.length} beads re-inserted`);
     }
     return backfilled;
+  }
+
+  /**
+   * Generate an AAAK-compressed bead manifest for Mayor context loading.
+   * Per HISTORIAN.md §AAAK Bead Manifest Compression.
+   *
+   * Format:
+   *   # Header: entity code definitions
+   *   POL=polecat | WIT=witness | ...
+   *
+   *   # One line per bead:
+   *   {id4}|{roleCode}|{taskCode}|{modelCode}|{outcome}|{witness}|{durationMs}ms|{tag}
+   *
+   * Returns the compressed manifest string.
+   */
+  generateAaakManifest(beads: Bead[]): string {
+    // Role code table
+    const ROLE_CODES: Record<string, string> = {
+      polecat: 'POL',
+      witness: 'WIT',
+      historian: 'HIS',
+      mayor: 'MAY',
+      safeguard: 'SAF',
+      refinery: 'REF',
+    };
+
+    // Model code table (longest prefix match wins)
+    const MODEL_CODES: [string, string][] = [
+      ['llama-3.1-8b', 'L8B'],
+      ['llama-3.3-70b', 'L70'],
+      ['llama-4-scout', 'L4S'],
+      ['meta-llama/llama-4-scout', 'L4S'],
+      ['qwen-qwen3-32b', 'QW32'],
+      ['qwen/qwen3-32b', 'QW32'],
+      ['llama-3.3', 'L33'],
+      ['gpt-oss-120b', 'G120'],
+      ['gpt-oss-20b', 'G20'],
+    ];
+
+    // Task code table: shorten task_type to a compact dot-notation code
+    const TASK_CODES: Record<string, string> = {
+      execute: 'exec',
+      unit_test: 'unit.tst',
+      documentation: 'docs',
+      boilerplate: 'bplr',
+      refactor: 'rfct.gen',
+      logic: 'logic',
+      feature: 'feat',
+      security: 'sec',
+      auth: 'auth.jwt',
+      architecture: 'arch',
+      review: 'review',
+      scan: 'scan',
+      generate_playbook: 'plybk',
+      orchestrate: 'orch',
+    };
+
+    const encodeRole = (role: string): string => ROLE_CODES[role.toLowerCase()] ?? role.slice(0, 3).toUpperCase();
+
+    const encodeModel = (model: string): string => {
+      const lower = model.toLowerCase();
+      for (const [prefix, code] of MODEL_CODES) {
+        if (lower.startsWith(prefix.toLowerCase())) return code;
+      }
+      return model.slice(0, 4).toUpperCase();
+    };
+
+    const encodeTask = (taskType: string): string => TASK_CODES[taskType] ?? taskType.slice(0, 8);
+
+    const encodeOutcome = (outcome?: string, status?: string): string => {
+      if (outcome === 'SUCCESS' || status === 'done') return 'pass';
+      if (outcome === 'FAILURE' || status === 'failed') return 'fail';
+      if (status === 'blocked') return 'blk';
+      return '?';
+    };
+
+    // Collect unique codes used for the header
+    const usedRoles = new Set<string>();
+    const usedModels = new Set<string>();
+    const usedTasks = new Set<string>();
+
+    const lines: string[] = [];
+    for (const bead of beads) {
+      const roleCode = encodeRole(bead.role ?? '');
+      const modelCode = encodeModel(bead.model ?? '');
+      const taskCode = encodeTask(bead.task_type ?? '');
+      const outcomeCode = encodeOutcome(bead.outcome, bead.status);
+      const idSlice = (bead.bead_id ?? '').slice(0, 4);
+      const durationMs = bead.metrics?.duration_ms ?? 0;
+
+      // Witness score — if bead has witness metadata
+      const witnessField =
+        bead.metrics?.witness_score !== undefined
+          ? `W${Math.round((bead.metrics.witness_score as number) * 100)}`
+          : 'null';
+
+      // Tag slug: first 14 chars of task description or bead_id suffix
+      const tagSlug = (bead.task_description ?? bead.bead_id ?? '')
+        .replace(/[^a-zA-Z0-9_.-]/g, '_')
+        .slice(0, 14);
+
+      usedRoles.add(roleCode);
+      usedModels.add(modelCode);
+      usedTasks.add(taskCode);
+
+      lines.push(`${idSlice}|${roleCode}|${taskCode}|${modelCode}|${outcomeCode}|${witnessField}|${durationMs}ms|${tagSlug}`);
+    }
+
+    // Build header: entity code definitions
+    const roleHeader = [...usedRoles]
+      .map((code) => {
+        const name = Object.entries(ROLE_CODES).find(([, c]) => c === code)?.[0] ?? code;
+        return `${code}=${name}`;
+      })
+      .join(' | ');
+
+    const modelHeader = [...usedModels]
+      .map((code) => {
+        const entry = MODEL_CODES.find(([, c]) => c === code);
+        return entry ? `${code}=${entry[0]}` : code;
+      })
+      .join(' | ');
+
+    const header = [
+      '# AAAK entity codes:',
+      `# roles: ${roleHeader}`,
+      `# models: ${modelHeader}`,
+      '',
+    ].join('\n');
+
+    return header + lines.join('\n');
   }
 
   close(): void {

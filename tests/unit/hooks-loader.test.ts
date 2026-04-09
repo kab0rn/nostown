@@ -174,6 +174,45 @@ describe('Hook executor', () => {
     expect(args['outcome']).toBe(SAMPLE_EVENT.outcome);
   });
 
+  it('sanitizer blocks shell metacharacters in substituted payload values', async () => {
+    // Craft a hook that would inject shell metacharacters via event data
+    // The executor.ts sanitizeHookValue() must strip these before they reach the executor
+    const injectionHook: Hook = {
+      ...SAMPLE_HOOK,
+      action: {
+        type: 'MCP_TOOL',
+        payload: { cmd: '{{event.beadId}}' },
+      },
+    };
+
+    // Event with a bead ID containing shell metacharacters (simulates a tampered event)
+    const poisonedEvent = {
+      ...SAMPLE_EVENT,
+      beadId: 'safe-id; rm -rf /',
+    };
+
+    const executed: Array<Hook['action']> = [];
+    await executeHook(injectionHook, poisonedEvent, async (a) => { executed.push(a); });
+
+    // sanitizeHookValue should have blocked the value (returns null → replaced with '')
+    expect(executed[0].payload['cmd']).toBe('');
+  });
+
+  it('substituteVars leaves multiple disallowed paths unchanged', () => {
+    const template = '{{event.secret}} {{event.beadId}} {{event.__proto__}}';
+    const result = substituteVars(template, SAMPLE_EVENT);
+    // Only event.beadId is allowed
+    expect(result).toContain(SAMPLE_EVENT.beadId);
+    expect(result).toContain('{{event.secret}}');      // not substituted
+    expect(result).toContain('{{event.__proto__}}');   // not substituted
+  });
+
+  it('substituteVars handles nested object traversal for allowed paths', () => {
+    // event.role is in ALLOWED_VAR_PATHS
+    const result = substituteVars('role={{event.role}}', SAMPLE_EVENT);
+    expect(result).toBe(`role=${SAMPLE_EVENT.role}`);
+  });
+
   it('executeHook skips disabled hooks', async () => {
     const executedActions: Array<Hook['action']> = [];
     const disabledHook: Hook = { ...SAMPLE_HOOK, enabled: false };

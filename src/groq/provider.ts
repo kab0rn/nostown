@@ -6,6 +6,7 @@ import type { InferenceParams, HeartbeatEvent } from '../types/index.js';
 import { getModelForRole, getFallbackModel, getTokenLimitForRole, isOllamaEligible, OLLAMA_MODELS } from './models.js';
 import { groqApiErrors, beadLatencyMs } from '../telemetry/metrics.js';
 import { CircuitBreaker } from '../resilience/circuit-breaker.js';
+import { Deacon } from '../roles/deacon.js';
 
 export type HeartbeatEmitter = (event: HeartbeatEvent) => void;
 
@@ -26,6 +27,7 @@ const OLLAMA_ACTIVATION_THRESHOLD_MS = 60_000;
 
 export class GroqProvider {
   private client: Groq;
+  private readonly apiKey: string;
   private emitHeartbeat: HeartbeatEmitter | null;
   private readonly circuitBreaker: CircuitBreaker;
   /** Timestamp when the current Groq outage started (null = no outage) */
@@ -33,8 +35,8 @@ export class GroqProvider {
 
   constructor(apiKey?: string, emitHeartbeat?: HeartbeatEmitter) {
     // Allow a dummy key for tests (will fail on actual API calls, not on construction)
-    const key = apiKey ?? process.env.GROQ_API_KEY ?? 'test-key-placeholder';
-    this.client = new Groq({ apiKey: key });
+    this.apiKey = apiKey ?? process.env.GROQ_API_KEY ?? 'test-key-placeholder';
+    this.client = new Groq({ apiKey: this.apiKey });
     this.emitHeartbeat = emitHeartbeat ?? null;
     this.circuitBreaker = new CircuitBreaker({
       name: 'groq-api',
@@ -73,7 +75,7 @@ export class GroqProvider {
     return body.message?.content ?? '';
   }
 
-  async executeInference(params: InferenceParams): Promise<string> {
+  async executeInference(params: InferenceParams, _pruneAttempt = 0): Promise<string> {
     const primaryModel = getModelForRole(params.role, params.task_type, params.model);
     const fallbackModel = getFallbackModel(params.role);
     const maxTokens = params.max_tokens ?? getTokenLimitForRole(params.role);
@@ -104,6 +106,22 @@ export class GroqProvider {
       return result;
     } catch (err: unknown) {
       const error = err as Error & { status?: number; code?: string };
+
+      // context_length_exceeded → Deacon prune + single retry (RESILIENCE.md)
+      if (
+        error.message?.includes('context_length_exceeded') &&
+        _pruneAttempt === 0
+      ) {
+        console.warn(`[GroqProvider] context_length_exceeded — triggering Deacon prune for ${params.role}/${params.task_type}`);
+        try {
+          const deacon = new Deacon(this.apiKey);
+          const prunedMessages = await deacon.prune(params.messages, params.role, params.task_type ?? 'execute');
+          return await this.executeInference({ ...params, messages: prunedMessages }, 1);
+        } catch (pruneErr) {
+          console.error(`[GroqProvider] Deacon prune failed: ${String(pruneErr)}`);
+          throw error;  // re-throw original
+        }
+      }
 
       // Circuit breaker open — fail fast, emit exhaustion
       if (error.message?.startsWith('CIRCUIT_OPEN')) {

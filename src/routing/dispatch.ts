@@ -156,3 +156,78 @@ export class RoutingDispatcher {
 export function getTaskComplexity(taskType: string): 'low' | 'medium' | 'high' | 'critical' {
   return TASK_COMPLEXITY[taskType] ?? 'medium';
 }
+
+// ── Tunnel Safety Guard ───────────────────────────────────────────────────────
+
+export interface TunnelResult {
+  tunnel: string;
+  sourceWing: string;
+  targetWing: string;
+  stackFamily?: string;      // e.g. 'node', 'python', 'go'
+  isolationFlag?: boolean;   // if true, cross-rig use is explicitly prohibited
+  resultAge?: number;        // age of the result in days
+}
+
+export interface TunnelSafetyCheck {
+  safe: boolean;
+  reason: string;
+  advisory: boolean;  // true = attach as advisory only, not auto-applied
+}
+
+const DEFAULT_LOOKBACK_DAYS = 14;
+
+/**
+ * Validate a cross-rig tunnel result before applying it.
+ * Per ROUTING.md §Tunnel Safety Guard: checks room name match, stack compatibility,
+ * isolation flags, and freshness. Failures → advisory-only, not auto-applied.
+ */
+export function checkTunnelSafety(
+  taskRoom: string,
+  result: TunnelResult,
+  opts: {
+    expectedStackFamily?: string;
+    lookbackDays?: number;
+  } = {},
+): TunnelSafetyCheck {
+  const lookbackDays = opts.lookbackDays ?? DEFAULT_LOOKBACK_DAYS;
+
+  // 1. Same task room name
+  if (result.tunnel !== taskRoom) {
+    return {
+      safe: false,
+      advisory: true,
+      reason: `Tunnel room mismatch: expected '${taskRoom}', got '${result.tunnel}'`,
+    };
+  }
+
+  // 2. Isolation flag — if set, cross-rig use is explicitly prohibited
+  if (result.isolationFlag === true) {
+    return {
+      safe: false,
+      advisory: false,  // hard block, not even advisory
+      reason: `Tunnel '${result.tunnel}' has isolation flag set — cross-rig use prohibited`,
+    };
+  }
+
+  // 3. Compatible stack/framework family
+  if (opts.expectedStackFamily && result.stackFamily) {
+    if (result.stackFamily !== opts.expectedStackFamily) {
+      return {
+        safe: false,
+        advisory: true,
+        reason: `Stack family mismatch: expected '${opts.expectedStackFamily}', got '${result.stackFamily}'`,
+      };
+    }
+  }
+
+  // 4. Freshness within lookback window
+  if (result.resultAge !== undefined && result.resultAge > lookbackDays) {
+    return {
+      safe: false,
+      advisory: true,
+      reason: `Tunnel result is ${result.resultAge} days old (lookback window: ${lookbackDays} days)`,
+    };
+  }
+
+  return { safe: true, advisory: false, reason: 'All tunnel safety checks passed' };
+}

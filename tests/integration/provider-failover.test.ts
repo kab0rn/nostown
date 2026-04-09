@@ -101,6 +101,44 @@ describe('GroqProvider failover', () => {
     expect(deprecated?.fallback).toBeDefined();
   });
 
+  it('#3: retries with temperature=0 after JSON parse failure', async () => {
+    // First response: invalid JSON → triggers temp=0 retry
+    // Second response: valid JSON
+    getMockCreate()
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'not valid json {{{' } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: '{"result":"ok"}' } }] });
+
+    const provider = new GroqProvider('test-key');
+    const result = await provider.executeInference({
+      ...BASE_PARAMS,
+      response_format: { type: 'json_object' },
+    });
+
+    expect(JSON.parse(result)).toEqual({ result: 'ok' });
+    expect(getMockCreate()).toHaveBeenCalledTimes(2);
+
+    // Second call should have temperature=0
+    const secondCallArgs = getMockCreate().mock.calls[1][0] as { temperature: number };
+    expect(secondCallArgs.temperature).toBe(0);
+  });
+
+  it('#3b: escalates to next-tier model after two JSON parse failures', async () => {
+    // All responses are invalid JSON → exhausts retries
+    getMockCreate().mockResolvedValue({ choices: [{ message: { content: '{bad json' } }] });
+
+    const provider = new GroqProvider('test-key');
+    const promise = provider.executeInference({
+      ...BASE_PARAMS,
+      response_format: { type: 'json_object' },
+    });
+    const handled = promise.catch(() => null);
+    await jest.runAllTimersAsync();
+    await handled;
+
+    await expect(promise).rejects.toThrow();
+    expect(getMockCreate()).toHaveBeenCalledTimes(3); // 3 = DEFAULT_MAX_RETRIES
+  });
+
   it('#2b: throws PROVIDER_EXHAUSTED if fallback also fails', async () => {
     const notFoundError = Object.assign(new Error('model_not_found'), { code: 'model_not_found' });
     const otherError = new Error('server error');
@@ -121,6 +159,47 @@ describe('GroqProvider failover', () => {
 
     await expect(promise).rejects.toThrow();
     expect(events.some((e) => e.type === 'PROVIDER_EXHAUSTED')).toBe(true);
+  });
+
+  it('#4: triggers Deacon prune on context_length_exceeded, retries with pruned context', async () => {
+    const contextError = Object.assign(new Error('context_length_exceeded: too many tokens'), {
+      code: 'context_length_exceeded',
+    });
+
+    // First call: context_length_exceeded → triggers Deacon
+    // Deacon's internal prune call: succeeds
+    // Retry with pruned context: succeeds
+    getMockCreate()
+      .mockRejectedValueOnce(contextError)                   // original call fails
+      .mockResolvedValueOnce({                                // Deacon's prune call succeeds
+        choices: [{ message: { content: 'pruned summary' } }],
+      })
+      .mockResolvedValueOnce({                                // retry with pruned context succeeds
+        choices: [{ message: { content: 'final result after deacon prune' } }],
+      });
+
+    const provider = new GroqProvider('test-key');
+    const result = await provider.executeInference(BASE_PARAMS);
+
+    expect(result).toBe('final result after deacon prune');
+    expect(getMockCreate()).toHaveBeenCalledTimes(3);
+  });
+
+  it('#4b: re-throws context_length_exceeded if Deacon prune also fails', async () => {
+    const contextError = Object.assign(new Error('context_length_exceeded: too many tokens'), {
+      code: 'context_length_exceeded',
+    });
+
+    // All Groq calls fail → Deacon cannot prune → original error re-thrown
+    getMockCreate().mockRejectedValue(contextError);
+
+    const provider = new GroqProvider('test-key');
+    const promise = provider.executeInference(BASE_PARAMS);
+    const handled = promise.catch(() => null);
+    await jest.runAllTimersAsync();
+    await handled;
+
+    await expect(promise).rejects.toThrow(/context_length_exceeded/);
   });
 });
 
