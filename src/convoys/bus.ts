@@ -5,6 +5,7 @@ import path from 'path';
 import type { ConvoyMessage } from '../types/index.js';
 import { loadPublicKey } from './sign.js';
 import { validateConvoy } from './verify.js';
+import { auditLog } from '../hardening/audit.js';
 
 const QUARANTINE_DIR = process.env.NOS_QUARANTINE_DIR ?? 'nos/quarantine';
 
@@ -91,6 +92,7 @@ export class ConvoyBus {
       }
     }
 
+    auditLog('CONVOY_SENT', sender_id, convoy.header.recipient, convoy.payload.type);
     this.saveToMailbox(convoy);
   }
 
@@ -158,6 +160,7 @@ export class ConvoyBus {
       const result = await validateConvoy(convoy, publicKeyHex, this.transportSecret);
       if (!result.ok) {
         console.error(`[ConvoyBus] Convoy validation failed for ${file}: ${result.reason}`);
+        auditLog('CONVOY_QUARANTINED', convoy.header.sender_id, convoy.header.recipient, result.reason);
         this.quarantine(filePath, result.reason);
         continue;
       }
