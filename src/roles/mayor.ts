@@ -48,6 +48,9 @@ export class Mayor {
   private emitHeartbeat: HeartbeatEmitter | null;
   private lastHeartbeatAt: Date = new Date();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  /** Outage queue: beads awaiting dispatch during PROVIDER_EXHAUSTED (RESILIENCE.md §Convoy Queueing) */
+  private outageQueue: Bead[] = [];
+  private outageActive = false;
 
   constructor(config: MayorConfig) {
     this.agentId = config.agentId;
@@ -365,8 +368,57 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
   }
 
   /**
+   * Signal that the Groq provider is experiencing an outage.
+   * When active, dispatchBead() enqueues beads instead of sending them.
+   * Per RESILIENCE.md §Convoy Queueing During Outage.
+   */
+  setOutageActive(active: boolean): void {
+    const changed = this.outageActive !== active;
+    this.outageActive = active;
+    if (changed) {
+      console.log(`[Mayor:${this.agentId}] Outage queue ${active ? 'ACTIVE' : 'CLEARED'} (${this.outageQueue.length} beads queued)`);
+    }
+  }
+
+  /** Number of beads currently waiting in the outage queue */
+  get outageQueueDepth(): number {
+    return this.outageQueue.length;
+  }
+
+  /**
+   * Drain the outage queue by dispatching all pending beads.
+   * Call when PROVIDER_RECOVERED event fires.
+   * Returns count of beads dispatched.
+   */
+  async drainOutageQueue(bus: ConvoyBus, startSeq: number): Promise<number> {
+    if (this.outageQueue.length === 0) return 0;
+
+    const toDispatch = [...this.outageQueue];
+    this.outageQueue = [];
+    this.outageActive = false;
+
+    console.log(`[Mayor:${this.agentId}] Draining outage queue: ${toDispatch.length} beads`);
+    let seq = startSeq;
+    let dispatched = 0;
+
+    for (const bead of toDispatch) {
+      try {
+        await this.dispatchBead(bead, bus, seq++);
+        dispatched++;
+      } catch (err) {
+        console.error(`[Mayor:${this.agentId}] Failed to dispatch queued bead ${bead.bead_id}: ${String(err)}`);
+        // Re-queue on failure
+        this.outageQueue.push(bead);
+      }
+    }
+
+    return dispatched;
+  }
+
+  /**
    * Dispatch a bead via convoy bus.
    * REQUIRES valid plan_checkpoint_id.
+   * During provider outage, queues the bead for later dispatch.
    */
   async dispatchBead(
     bead: Bead,
@@ -376,6 +428,13 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
     // DISPATCH GUARD: must have checkpoint
     if (!bead.plan_checkpoint_id) {
       throw new Error(`MAYOR_CHECKPOINT_MISSING: bead ${bead.bead_id} has no plan_checkpoint_id`);
+    }
+
+    // OUTAGE GUARD: during provider outage, queue bead instead of dispatching (RESILIENCE.md)
+    if (this.outageActive) {
+      console.log(`[Mayor:${this.agentId}] Outage active — queuing bead ${bead.bead_id} (${this.outageQueue.length + 1} in queue)`);
+      this.outageQueue.push(bead);
+      return;
     }
 
     let privateKey: string;

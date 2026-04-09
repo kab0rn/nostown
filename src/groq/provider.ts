@@ -91,6 +91,7 @@ export class GroqProvider {
       console.warn(`[GroqProvider] Groq outage > 60s — routing ${params.role} to Ollama at ${ollamaUrl}`);
       try {
         const result = await this.callOllama(params, ollamaUrl);
+        this.groqOutageStartAt = null;  // Clear outage timer on successful Ollama response
         this.emitHeartbeat?.({ type: 'PROVIDER_RECOVERED', recovered_at: new Date().toISOString() });
         return result;
       } catch (ollamaErr) {

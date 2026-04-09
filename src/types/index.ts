@@ -158,6 +158,12 @@ export interface ScanResult {
     severity: 'critical' | 'high' | 'medium';
     detail: string;
   }>;
+  /** Set when a LOCKDOWN signal was triggered (credential leak or destructive command) */
+  lockdown?: {
+    triggered: true;
+    reason: string;
+    lockdown_id: string;
+  };
 }
 
 export interface PlaybookEntry {

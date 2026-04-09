@@ -4,14 +4,17 @@
 
 import { GroqProvider } from '../groq/provider.js';
 import { MemPalaceClient } from '../mempalace/client.js';
+import { KnowledgeGraph } from '../kg/index.js';
 import type { ScanResult, InferenceParams } from '../types/index.js';
 import { safeguardQueueDepth, safeguardScanLatencyMs } from '../telemetry/metrics.js';
+import { v4 as uuidv4 } from 'uuid';
 
 export interface SafeguardConfig {
   poolSize?: number;    // minimum 2
   groqApiKey?: string;
   rulesetCacheTtlMs?: number;
   palaceUrl?: string;
+  kgPath?: string;      // for writing LOCKDOWN KG triples
 }
 
 interface SecurityRule {
@@ -100,13 +103,19 @@ export class SafeguardWorker {
   private workerId: string;
   private provider: GroqProvider;
   private palace: MemPalaceClient;
+  private kg: KnowledgeGraph;
   private rulesetCacheTtlMs: number;
 
-  constructor(workerId: string, groqApiKey?: string, rulesetCacheTtlMs = 300_000, palaceUrl?: string) {
+  constructor(workerId: string, groqApiKey?: string, rulesetCacheTtlMs = 300_000, palaceUrl?: string, kgPath?: string) {
     this.workerId = workerId;
     this.provider = new GroqProvider(groqApiKey);
     this.palace = new MemPalaceClient(palaceUrl);
+    this.kg = new KnowledgeGraph(kgPath);
     this.rulesetCacheTtlMs = rulesetCacheTtlMs;
+  }
+
+  close(): void {
+    this.kg.close();
   }
 
   /**
@@ -169,10 +178,11 @@ export class SafeguardWorker {
       }
     }
 
-    // If any critical violations found statically, return immediately
+    // If any critical violations found statically, trigger LOCKDOWN immediately
     const hasCritical = violations.some((v) => v.severity === 'critical');
     if (hasCritical) {
-      return { approved: false, violations };
+      const lockdown = this.emitLockdown(violations.filter((v) => v.severity === 'critical'));
+      return { approved: false, violations, lockdown };
     }
 
     // Load learned patterns from prior sessions
@@ -200,8 +210,47 @@ export class SafeguardWorker {
       }
     }
 
+    const criticalFromLlm = violations.filter((v) => v.severity === 'critical');
     const approved = violations.filter((v) => v.severity === 'critical' || v.severity === 'high').length === 0;
+
+    if (criticalFromLlm.length > 0) {
+      const lockdown = this.emitLockdown(criticalFromLlm);
+      return { approved: false, violations, lockdown };
+    }
+
     return { approved, violations };
+  }
+
+  /**
+   * Emit LOCKDOWN signal: write KG triple and log hard stop.
+   * Per ROLES.md §Safeguard: every LOCKDOWN written as KG triple.
+   */
+  private emitLockdown(criticalViolations: ScanResult['violations']): ScanResult['lockdown'] {
+    const lockdownId = `lockdown_${uuidv4().slice(0, 8)}`;
+    const reason = criticalViolations.map((v) => v.rule).join(', ');
+    const today = new Date().toISOString().slice(0, 10);
+
+    console.error(`[SafeguardWorker:${this.workerId}] *** LOCKDOWN TRIGGERED *** ${lockdownId}: ${reason}`);
+
+    // Write KG triple: lockdown_{id} → triggered_by → {vuln_type} (ROLES.md §Safeguard step 4)
+    try {
+      this.kg.addTriple({
+        subject: lockdownId,
+        relation: 'triggered_by',
+        object: reason,
+        valid_from: today,
+        agent_id: this.workerId,
+        metadata: {
+          class: 'critical',
+          violations: criticalViolations.map((v) => ({ rule: v.rule, detail: v.detail })),
+        },
+        created_at: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn(`[SafeguardWorker:${this.workerId}] LOCKDOWN KG write failed: ${String(err)}`);
+    }
+
+    return { triggered: true, reason, lockdown_id: lockdownId };
   }
 
   private async llmScan(diff: string, knownPatterns: string[]): Promise<ScanResult['violations']> {
@@ -260,6 +309,7 @@ export class SafeguardPool {
         config.groqApiKey,
         config.rulesetCacheTtlMs,
         config.palaceUrl,
+        config.kgPath,
       ),
     );
     this.availableWorkers = [...this.workers];
@@ -337,5 +387,11 @@ export class SafeguardPool {
 
   get queueDepth(): number {
     return this.queue.length;
+  }
+
+  close(): void {
+    for (const worker of this.workers) {
+      worker.close();
+    }
   }
 }
