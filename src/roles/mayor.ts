@@ -9,6 +9,7 @@ import { buildSignedConvoy } from '../convoys/sign.js';
 import { loadPrivateKey } from '../convoys/sign.js';
 import type { Bead, ConvoyMessage, InferenceParams, HeartbeatEvent } from '../types/index.js';
 import { Ledger as LedgerClass } from '../ledger/index.js';
+import { DEFAULT_IN_FLIGHT_LIMITS } from '../swarm/tools.js';
 import { v4 as uuidv4 } from 'uuid';
 
 export type HeartbeatEmitter = (event: HeartbeatEvent) => void;
@@ -104,7 +105,16 @@ export class Mayor {
    * 4. CHECKPOINT to MemPalace (MANDATORY before dispatch)
    * 5. Dispatch beads via convoy bus
    */
-  async orchestrate(task: Task): Promise<DispatchPlan> {
+  async orchestrate(task: Task, inFlightLimits = DEFAULT_IN_FLIGHT_LIMITS): Promise<DispatchPlan> {
+    // 0. Adaptive backpressure: check in-flight limits before decomposing (SWARM.md §3)
+    const currentBeads = this.ledger.readBeads(this.rigName);
+    const inProgressCount = currentBeads.filter((b) => b.status === 'in_progress').length;
+    if (inProgressCount >= inFlightLimits.maxPolecatBeads) {
+      throw new Error(
+        `Mayor WAITING_FOR_CAPACITY: ${inProgressCount} beads in-flight (limit: ${inFlightLimits.maxPolecatBeads})`,
+      );
+    }
+
     // 1. Palace wakeup
     let palaceContext = '';
     try {

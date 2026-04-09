@@ -132,4 +132,23 @@ describe('Mayor checkpoint before dispatch (#8)', () => {
     const callArgs = saveCheckpointSpy.mock.calls[0] as [string, unknown, string[]];
     expect(callArgs[2].length).toBe(plan.beads.length);
   });
+
+  it('throws WAITING_FOR_CAPACITY when in-flight limit is exceeded', async () => {
+    // Pass a very small limit that the ledger (empty) won't hit,
+    // but we can force it by setting limit to 0.
+    await expect(
+      mayor.orchestrate(
+        { description: 'Should be blocked' },
+        { maxPolecatBeads: 0, maxWitnessBeads: 20 },
+      ),
+    ).rejects.toThrow(/WAITING_FOR_CAPACITY/);
+  });
+
+  it('proceeds normally when in-flight count is below limit', async () => {
+    const plan = await mayor.orchestrate(
+      { description: 'Should proceed' },
+      { maxPolecatBeads: 50, maxWitnessBeads: 20 },
+    );
+    expect(plan.beads.length).toBeGreaterThan(0);
+  });
 });
