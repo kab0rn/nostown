@@ -244,4 +244,113 @@ describe('Mayor outage queue (RESILIENCE.md §Convoy Queueing)', () => {
     const count = await mayor.drainOutageQueue(bus, 1);
     expect(count).toBe(0);
   });
+
+  it('dispatchBead persists bead to MemPalace outage-queue when outage is active', async () => {
+    const { ConvoyBus } = await import('../../src/convoys/bus');
+    const { Ledger: LedgerCls } = await import('../../src/ledger/index');
+    const bus = new ConvoyBus('persist-outage-rig');
+
+    const bead = LedgerCls.createBead({
+      role: 'polecat',
+      task_type: 'execute',
+      model: 'test',
+      rig: 'persist-outage-rig',
+      status: 'pending',
+      plan_checkpoint_id: 'ckpt-persist-001',
+      bead_id: 'persist-bead-001',
+    });
+
+    const addDrawerSpy = jest.spyOn(MemPalaceClient.prototype, 'addDrawer').mockResolvedValue({ id: 'ok' });
+
+    mayor.setOutageActive(true);
+    await mayor.dispatchBead(bead, bus, 1);
+
+    // Should have called addDrawer to persist bead to outage-queue
+    const outageQueueCalls = addDrawerSpy.mock.calls.filter(
+      (args) => (args[2] as string) === 'outage-queue',
+    );
+    expect(outageQueueCalls.length).toBeGreaterThan(0);
+    const persistedBead = JSON.parse(outageQueueCalls[0][3] as string) as { bead_id: string };
+    expect(persistedBead.bead_id).toBe('persist-bead-001');
+  });
+});
+
+describe('Mayor startup recovery (RESILIENCE.md §Mayor Session Recovery)', () => {
+  let mayor: Mayor;
+  let diaryReadSpy: jest.SpyInstance;
+  let searchSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    mayor = new Mayor({ agentId: 'mayor_ckpt', rigName: 'startup-rig', kgPath: TEST_DB });
+
+    diaryReadSpy = jest.spyOn(MemPalaceClient.prototype, 'diaryRead').mockResolvedValue([]);
+    searchSpy = jest.spyOn(MemPalaceClient.prototype, 'search').mockResolvedValue({ results: [], total: 0 });
+  });
+
+  afterEach(() => {
+    mayor.close();
+  });
+
+  it('calls diaryRead for wing_mayor on startup (step 1)', async () => {
+    await mayor.startup();
+    expect(diaryReadSpy).toHaveBeenCalledWith('wing_mayor');
+  });
+
+  it('queries outage-queue in hall_events on startup (step 3)', async () => {
+    await mayor.startup();
+    const outageQueueSearchCalls = searchSpy.mock.calls.filter(
+      (args) => (args[0] as string) === 'outage-queue' && (args[2] as string) === 'hall_events',
+    );
+    expect(outageQueueSearchCalls.length).toBeGreaterThan(0);
+  });
+
+  it('recovers beads from persisted outage-queue on startup', async () => {
+    const { Ledger: LedgerCls } = await import('../../src/ledger/index');
+    const bead = LedgerCls.createBead({
+      role: 'polecat',
+      task_type: 'execute',
+      model: 'test',
+      rig: 'startup-rig',
+      status: 'pending',
+      plan_checkpoint_id: 'ckpt-recover-001',
+      bead_id: 'recover-bead-001',
+    });
+
+    // Simulate prior session that persisted a bead to outage-queue
+    searchSpy.mockImplementation((query: string, _wing: string, hall: string) => {
+      if (query === 'outage-queue' && hall === 'hall_events') {
+        return Promise.resolve({
+          results: [{ id: 'outage-1', content: JSON.stringify(bead) }],
+          total: 1,
+        });
+      }
+      return Promise.resolve({ results: [], total: 0 });
+    });
+
+    await mayor.startup();
+
+    // Should have recovered the bead into the in-memory outage queue
+    expect(mayor.outageQueueDepth).toBe(1);
+  });
+
+  it('returns true when active-convoy checkpoint exists', async () => {
+    searchSpy.mockImplementation((query: string, _wing: string, hall: string) => {
+      if (query === 'active-convoy' && hall === 'hall_facts') {
+        return Promise.resolve({
+          results: [{ id: 'ckpt-1', content: '{"checkpoint_id":"ckpt-1"}' }],
+          total: 1,
+        });
+      }
+      return Promise.resolve({ results: [], total: 0 });
+    });
+
+    const orphanFound = await mayor.startup();
+    expect(orphanFound).toBe(true);
+  });
+
+  it('returns false when no active-convoy checkpoint exists', async () => {
+    const orphanFound = await mayor.startup();
+    expect(orphanFound).toBe(false);
+  });
 });

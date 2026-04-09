@@ -70,9 +70,25 @@ export class Mayor {
    * Startup: check for orphan workflows (MAYOR_MISSING recovery).
    * MUST be called before orchestrate() on a replacement Mayor.
    * Returns true if an orphan workflow was found and adopted.
+   *
+   * Per RESILIENCE.md §Mayor Session Recovery:
+   * 1. diaryRead wing_mayor for prior session summary
+   * 2. Query hall_facts active-convoy for in-progress plans
+   * 3. Query hall_events outage-queue for beads queued during prior outage
    */
   async startup(): Promise<boolean> {
-    // Check MemPalace for an active-convoy checkpoint (RESILIENCE.md § Mayor Replacement Flow)
+    // Step 1: Load prior session diary summary (RESILIENCE.md §Mayor Session Recovery step 1)
+    try {
+      const diary = await this.palace.diaryRead(`wing_mayor`);
+      if (diary.length > 0) {
+        console.log(`[Mayor:${this.agentId}] Session recovery: loaded ${diary.length} prior diary entries`);
+      }
+    } catch {
+      // Palace unreachable — non-fatal
+    }
+
+    // Step 2: Check MemPalace for an active-convoy checkpoint (RESILIENCE.md § Mayor Replacement Flow)
+    let orphanFound = false;
     try {
       const search = await this.palace.search(
         'active-convoy',
@@ -95,12 +111,31 @@ export class Mayor {
           );
         }
         this.lastHeartbeatAt = new Date();
-        return true;
+        orphanFound = true;
       }
     } catch {
       // Palace unreachable — non-fatal, proceed with normal startup
     }
-    return false;
+
+    // Step 3: Recover beads persisted to outage-queue during prior session (RESILIENCE.md step 3)
+    try {
+      const outageSearch = await this.palace.search('outage-queue', 'wing_mayor', 'hall_events');
+      for (const result of outageSearch.results) {
+        try {
+          const bead = JSON.parse(result.content) as Bead;
+          this.outageQueue.push(bead);
+        } catch {
+          // malformed entry — skip
+        }
+      }
+      if (this.outageQueue.length > 0) {
+        console.log(`[Mayor:${this.agentId}] Recovered ${this.outageQueue.length} beads from persisted outage queue`);
+      }
+    } catch {
+      // Palace unreachable — non-fatal
+    }
+
+    return orphanFound;
   }
 
   /**
@@ -585,6 +620,12 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
     if (this.outageActive) {
       console.log(`[Mayor:${this.agentId}] Outage active — queuing bead ${bead.bead_id} (${this.outageQueue.length + 1} in queue)`);
       this.outageQueue.push(bead);
+      // Persist to MemPalace so outage queue survives session crashes (RESILIENCE.md §Mayor Session Recovery step 3)
+      try {
+        await this.palace.addDrawer('wing_mayor', 'hall_events', 'outage-queue', JSON.stringify(bead));
+      } catch {
+        // non-fatal — in-memory queue still has it for this session
+      }
       return;
     }
 
