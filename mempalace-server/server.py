@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Any
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -25,7 +26,14 @@ DB_PATH = os.environ.get(
     str(Path(__file__).parent.parent / "palace-db" / "palace.sqlite"),
 )
 
-app = FastAPI(title="MemPalace Server", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="MemPalace Server", version="0.1.0", lifespan=lifespan)
 
 # ── Database bootstrap ───────────────────────────────────────────────────────
 
@@ -101,6 +109,14 @@ def init_db():
             wing_a  TEXT NOT NULL,
             wing_b  TEXT NOT NULL,
             room_name TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS checkpoints (
+            id         TEXT PRIMARY KEY,
+            agent_id   TEXT NOT NULL,
+            plan       TEXT NOT NULL,
+            bead_ids   TEXT NOT NULL,
+            created_at TEXT NOT NULL
         );
     """)
     db.commit()
@@ -227,12 +243,15 @@ class DiaryWriteRequest(BaseModel):
     content: str
 
 
+# ── Pydantic models (continued) ──────────────────────────────────────────────
+
+class CheckpointSaveRequest(BaseModel):
+    agent_id: str
+    plan: dict
+    bead_ids: list[str]
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
-
-@app.on_event("startup")
-def startup():
-    init_db()
-
 
 @app.get("/health")
 def health():
@@ -522,6 +541,57 @@ def list_tunnels():
     try:
         rows = db.execute("SELECT * FROM tunnels ORDER BY id").fetchall()
         return [dict(r) for r in rows]
+    finally:
+        db.close()
+
+
+@app.post("/palace/checkpoint")
+def save_checkpoint(req: CheckpointSaveRequest):
+    """Save a Mayor dispatch plan checkpoint. Returns plan_checkpoint_id."""
+    db = get_db()
+    try:
+        checkpoint_id = f"ckpt_{uuid.uuid4().hex[:12]}"
+        db.execute(
+            "INSERT INTO checkpoints (id, agent_id, plan, bead_ids, created_at) VALUES (?, ?, ?, ?, ?)",
+            (checkpoint_id, req.agent_id, json.dumps(req.plan), json.dumps(req.bead_ids), now_iso()),
+        )
+        # Also store in hall_facts so wakeup can discover it
+        ensure_wing(db, "wing_mayor")
+        drawer_id = str(uuid.uuid4())
+        content = json.dumps({"checkpoint_id": checkpoint_id, "agent_id": req.agent_id, "bead_count": len(req.bead_ids)})
+        db.execute(
+            """INSERT INTO drawers (id, wing_id, hall_type, room_id, content, created_at, embedding_keywords)
+               VALUES (?, 'wing_mayor', 'hall_facts', 'active-convoy', ?, ?, ?)""",
+            (drawer_id, content, now_iso(), "active-convoy checkpoint"),
+        )
+        db.execute(
+            "INSERT INTO drawers_fts(id, content, embedding_keywords) VALUES (?, ?, ?)",
+            (drawer_id, content, "active-convoy checkpoint"),
+        )
+        db.commit()
+        return {"checkpoint_id": checkpoint_id}
+    finally:
+        db.close()
+
+
+@app.get("/palace/checkpoint/{checkpoint_id}")
+def verify_checkpoint(checkpoint_id: str):
+    """Verify a checkpoint exists. Used by bus.ts dispatch guard."""
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT id, agent_id, bead_ids, created_at FROM checkpoints WHERE id = ?",
+            (checkpoint_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Checkpoint not found")
+        return {
+            "checkpoint_id": row["id"],
+            "agent_id": row["agent_id"],
+            "bead_count": len(json.loads(row["bead_ids"])),
+            "created_at": row["created_at"],
+            "valid": True,
+        }
     finally:
         db.close()
 

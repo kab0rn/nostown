@@ -14,13 +14,14 @@ export const ROLE_MODELS: Record<string, ModelConfig> = {
   historian: { primary: 'llama-3.1-8b-instant', fallback: 'llama-3.1-8b-instant' },
 };
 
+// Hard caps per HARDENING.md §1.1 — prevent runaway cost
 export const ROLE_TOKEN_LIMITS: Record<string, number> = {
-  mayor: 8192,
-  polecat: 16384,
-  witness: 8192,
+  mayor: 4096,
+  polecat: 2000,     // hard cap — see GROQ_INTEGRATION.md
+  witness: 2048,
   refinery: 8192,
-  safeguard: 4096,
-  historian: 4096,
+  safeguard: 1024,
+  historian: 4096,   // batch mode, cost controlled separately
 };
 
 export function getModelForRole(

@@ -60,6 +60,43 @@ export class Mayor {
   }
 
   /**
+   * Startup: check for orphan workflows (MAYOR_MISSING recovery).
+   * MUST be called before orchestrate() on a replacement Mayor.
+   * Returns true if an orphan workflow was found and adopted.
+   */
+  async startup(): Promise<boolean> {
+    // Check MemPalace for an active-convoy checkpoint (RESILIENCE.md § Mayor Replacement Flow)
+    try {
+      const search = await this.palace.search(
+        'active-convoy',
+        'wing_mayor',
+        'hall_facts',
+      );
+      if (search.results.length > 0) {
+        const checkpoint = search.results[0];
+        console.log(
+          `[Mayor:${this.agentId}] MAYOR_MISSING recovery: found active convoy checkpoint ${String(checkpoint.id ?? 'unknown')}`,
+        );
+        // Read ledger for in-progress beads and re-attach context
+        const beads = this.ledger.readBeads(this.rigName);
+        const inProgress = beads.filter(
+          (b) => b.status === 'in_progress' || b.status === 'pending',
+        );
+        if (inProgress.length > 0) {
+          console.log(
+            `[Mayor:${this.agentId}] Adopting ${inProgress.length} orphan beads — NOT re-decomposing`,
+          );
+        }
+        this.lastHeartbeatAt = new Date();
+        return true;
+      }
+    } catch {
+      // Palace unreachable — non-fatal, proceed with normal startup
+    }
+    return false;
+  }
+
+  /**
    * Full orchestration pipeline:
    * 1. Palace wakeup (L0+L1 context)
    * 2. Check existing playbooks
@@ -156,7 +193,8 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
       const parsed = JSON.parse(raw) as { beads?: Array<Record<string, unknown>> };
       const rawBeads = Array.isArray(parsed.beads) ? parsed.beads : [];
 
-      return rawBeads.map((rb) => LedgerClass.createBead({
+      // First pass: create beads with temporary IDs to build dependency graph
+      const tempBeads = rawBeads.map((rb, i) => LedgerClass.createBead({
         role: String(rb.role ?? 'polecat'),
         task_type: String(rb.task_type ?? task.task_type ?? 'execute'),
         model: this.modelForRole(String(rb.role ?? 'polecat')),
@@ -167,6 +205,22 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
         fan_out_weight: Number(rb.fan_out_weight ?? 1),
         rig: this.rigName,
         status: 'pending',
+      }));
+
+      // Second pass: compute fan_out_weight = number of beads that depend on each bead
+      // (ROLES.md: Mayor MUST annotate critical_path and fan_out_weight)
+      const dependentCount = new Map<string, number>();
+      for (const bead of tempBeads) {
+        for (const dep of bead.needs) {
+          dependentCount.set(dep, (dependentCount.get(dep) ?? 0) + 1);
+        }
+      }
+      return tempBeads.map((bead) => ({
+        ...bead,
+        fan_out_weight: Math.max(
+          bead.fan_out_weight,
+          dependentCount.get(bead.bead_id) ?? 0,
+        ),
       }));
     } catch (err) {
       console.error(`[Mayor:${this.agentId}] Decomposition failed: ${String(err)}`);

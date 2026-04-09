@@ -66,7 +66,8 @@ export class ConvoyBus {
   }
 
   /**
-   * Send a convoy to the recipient's mailbox after validating seq monotonicity.
+   * Send a convoy to the recipient's mailbox.
+   * Enforces: seq monotonicity, BEAD_DISPATCH checkpoint guard.
    */
   async send(convoy: ConvoyMessage): Promise<void> {
     const { sender_id, seq } = convoy.header;
@@ -79,6 +80,16 @@ export class ConvoyBus {
       );
     }
     this.seqCounters.set(sender_id, seq);
+
+    // MAYOR_CHECKPOINT_MISSING guard (HARDENING.md §1.2.1, CONVOYS.md §4)
+    if (convoy.payload.type === 'BEAD_DISPATCH') {
+      const checkpointId = (convoy.payload.data as Record<string, unknown>)?.plan_checkpoint_id;
+      if (!checkpointId) {
+        throw new Error(
+          `MAYOR_CHECKPOINT_MISSING: BEAD_DISPATCH from ${sender_id} missing plan_checkpoint_id`,
+        );
+      }
+    }
 
     this.saveToMailbox(convoy);
   }
@@ -95,10 +106,31 @@ export class ConvoyBus {
     const inboxDir = mailboxInboxPath(this.rigName, role);
     if (!fs.existsSync(inboxDir)) return 0;
 
-    const files = fs.readdirSync(inboxDir)
+    const rawFiles = fs.readdirSync(inboxDir)
       .filter((f) => f.endsWith('.convoy.json'))
-      .sort(); // lexicographic = chronological by timestamp prefix
+      .sort(); // lexicographic = FIFO baseline
 
+    // Priority-aware draining (CONVOYS.md §4):
+    // critical_path=true > fan_out_weight DESC > priority > FIFO
+    interface PrioritizedEntry { file: string; score: number }
+    const entries: PrioritizedEntry[] = rawFiles.map((file) => {
+      let score = 0;
+      try {
+        const data = JSON.parse(fs.readFileSync(path.join(inboxDir, file), 'utf8')) as ConvoyMessage;
+        const d = data.payload.data as Record<string, unknown> | undefined;
+        if (d?.critical_path === true) score += 100_000;
+        if (typeof d?.fan_out_weight === 'number') score += (d.fan_out_weight as number) * 100;
+        const prio = d?.priority as string | undefined;
+        if (prio === 'high') score += 10;
+        else if (prio === 'normal') score += 5;
+      } catch {
+        // unparseable files get score 0 (FIFO position)
+      }
+      return { file, score };
+    });
+    entries.sort((a, b) => b.score - a.score); // descending priority
+
+    const files = entries.map((e) => e.file);
     let processed = 0;
 
     for (const file of files) {

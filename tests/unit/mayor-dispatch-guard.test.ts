@@ -113,6 +113,46 @@ describe('Mayor dispatch guard', () => {
   });
 });
 
+describe('ConvoyBus BEAD_DISPATCH checkpoint guard', () => {
+  // The bus itself must reject BEAD_DISPATCH convoys missing plan_checkpoint_id
+  it('bus.send rejects BEAD_DISPATCH without plan_checkpoint_id', async () => {
+    const bus = new ConvoyBus('test-rig-bus');
+    const convoy = {
+      header: {
+        sender_id: 'mayor_test',
+        recipient: 'polecat',
+        timestamp: new Date().toISOString(),
+        seq: 1,
+      },
+      payload: {
+        type: 'BEAD_DISPATCH' as const,
+        data: { bead_id: 'no-ckpt-bead' }, // missing plan_checkpoint_id
+      },
+      signature: 'ed25519:fake',
+    };
+    await expect(bus.send(convoy)).rejects.toThrow(/MAYOR_CHECKPOINT_MISSING/);
+  });
+
+  it('bus.send accepts BEAD_DISPATCH with plan_checkpoint_id', async () => {
+    const bus = new ConvoyBus('test-rig-bus2');
+    const convoy = {
+      header: {
+        sender_id: 'mayor_test',
+        recipient: 'polecat',
+        timestamp: new Date().toISOString(),
+        seq: 1,
+      },
+      payload: {
+        type: 'BEAD_DISPATCH' as const,
+        data: { bead_id: 'ckpt-bead', plan_checkpoint_id: 'ckpt_abc123' },
+      },
+      signature: 'ed25519:fake',
+    };
+    // Does not throw — the checkpoint guard passes, file write succeeds
+    await expect(bus.send(convoy)).resolves.not.toThrow();
+  });
+});
+
 describe('Swarm coordinator dependency ordering', () => {
   it('topological sort orders beads correctly', async () => {
     const { SwarmCoordinator } = await import('../../src/swarm/coordinator');

@@ -8,15 +8,15 @@ import { getModelForRole, getFallbackModel, getTokenLimitForRole } from './model
 export type HeartbeatEmitter = (event: HeartbeatEvent) => void;
 
 const DEFAULT_MAX_RETRIES = 3;
-const BASE_BACKOFF_MS = 500;
-const MAX_BACKOFF_MS = 30000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Per GROQ_INTEGRATION.md: attempt 1=5s, 2=15s, 3=30s
 function backoffMs(attempt: number): number {
-  return Math.min(BASE_BACKOFF_MS * Math.pow(2, attempt), MAX_BACKOFF_MS);
+  const delays = [5_000, 15_000, 30_000];
+  return delays[Math.min(attempt, delays.length - 1)] ?? 30_000;
 }
 
 export class GroqProvider {
