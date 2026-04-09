@@ -1,0 +1,23 @@
+{
+  "id": "hook_mayor_promote_model",
+  "role": "Mayor",
+  "trigger": {
+    "event": "BEAD_RESOLVED",
+    "filter": {
+      "outcomeType": "SUCCESS"
+    }
+  },
+  "action": {
+    "type": "KG_QUERY",
+    "payload": {
+      "query": "model_performance",
+      "args": {
+        "modelId": "{{event.modelId}}",
+        "outcome": "{{event.outcome}}",
+        "timestamp": "{{event.timestamp}}"
+      }
+    }
+  },
+  "enabled": true,
+  "priority": 5
+}

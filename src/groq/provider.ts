@@ -47,7 +47,17 @@ export class GroqProvider {
       ) {
         console.warn(`[GroqProvider] Model ${primaryModel} not found, hot-swapping to ${fallbackModel}`);
         this.emitHeartbeat?.({ type: 'MODEL_DEPRECATED', model: primaryModel, fallback: fallbackModel });
-        return await this.runWithRetry(fallbackModel, params, maxTokens);
+        try {
+          return await this.runWithRetry(fallbackModel, params, maxTokens);
+        } catch (fallbackErr: unknown) {
+          const fe = fallbackErr as Error;
+          this.emitHeartbeat?.({
+            type: 'PROVIDER_EXHAUSTED',
+            model: fallbackModel,
+            error: fe.message ?? String(fallbackErr),
+          });
+          throw fallbackErr;
+        }
       }
 
       // After exhausting retries — emit PROVIDER_EXHAUSTED

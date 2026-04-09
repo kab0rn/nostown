@@ -80,7 +80,7 @@ function getOrLoadRules(ttlMs: number): SecurityRule[] {
   return rulesetCache.rules;
 }
 
-class SafeguardWorker {
+export class SafeguardWorker {
   private workerId: string;
   private provider: GroqProvider;
   private rulesetCacheTtlMs: number;
@@ -173,12 +173,26 @@ export class SafeguardPool {
   }
 
   /**
-   * Scan a diff using the next available worker (round-robin).
+   * Scan a diff using the next available worker (round-robin with failover).
+   * If the selected worker throws, the next worker in the pool is tried.
    */
   async scan(diff: string): Promise<ScanResult> {
-    const worker = this.workers[this.roundRobinIndex % this.workers.length];
+    const startIndex = this.roundRobinIndex % this.workers.length;
     this.roundRobinIndex++;
-    return worker.scan(diff);
+
+    for (let i = 0; i < this.workers.length; i++) {
+      const workerIndex = (startIndex + i) % this.workers.length;
+      try {
+        return await this.workers[workerIndex].scan(diff);
+      } catch (err) {
+        console.warn(`[SafeguardPool] Worker ${workerIndex} failed: ${String(err)}`);
+        if (i === this.workers.length - 1) {
+          throw new Error(`SafeguardPool: all ${this.workers.length} workers exhausted`);
+        }
+      }
+    }
+
+    throw new Error('SafeguardPool: scan loop exited unexpectedly');
   }
 
   get workerCount(): number {

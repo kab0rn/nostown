@@ -1,0 +1,20 @@
+{
+  "id": "hook_historian_log_all",
+  "role": "Historian",
+  "trigger": {
+    "event": "BEAD_RESOLVED"
+  },
+  "action": {
+    "type": "MCP_TOOL",
+    "payload": {
+      "tool": "historian_append",
+      "args": {
+        "beadId": "{{event.beadId}}",
+        "outcome": "{{event.outcome}}",
+        "timestamp": "{{event.timestamp}}"
+      }
+    }
+  },
+  "enabled": true,
+  "priority": 10
+}

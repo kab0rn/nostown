@@ -220,20 +220,30 @@ export class MemPalaceClient {
   /**
    * Save an agent checkpoint (plan) to MemPalace.
    * Returns the checkpoint ID for use in BEAD_DISPATCH.
+   * Uses /palace/checkpoint dedicated endpoint.
    */
   async saveCheckpoint(
     agentId: string,
     plan: Record<string, unknown>,
     beadIds: string[],
   ): Promise<string> {
-    const content = JSON.stringify({ agent_id: agentId, plan, bead_ids: beadIds });
-    const result = await this.addDrawer(
-      `wing_${agentId}`,
-      'hall_facts',
-      'checkpoints',
-      content,
-      `checkpoint plan ${agentId}`,
-    );
-    return result.id;
+    const result = await this.request<{ checkpoint_id: string }>('POST', '/palace/checkpoint', {
+      agent_id: agentId,
+      plan,
+      bead_ids: beadIds,
+    });
+    return result.checkpoint_id;
+  }
+
+  /**
+   * Verify a checkpoint exists in MemPalace.
+   */
+  async verifyCheckpoint(checkpointId: string): Promise<boolean> {
+    try {
+      const result = await this.request<{ valid?: boolean }>('GET', `/palace/checkpoint/${encodeURIComponent(checkpointId)}`);
+      return result.valid === true;
+    } catch {
+      return false;
+    }
   }
 }

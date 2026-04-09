@@ -273,6 +273,50 @@ export class Historian {
     }
   }
 
+  /**
+   * Backfill any beads from the ledger that are missing from MemPalace drawers.
+   * Per HARDENING.md §124: compares beads.jsonl against palace Drawers by bead_id.
+   * Returns count of beads backfilled.
+   */
+  async backfillMissingDrawers(rigName: string): Promise<number> {
+    const beads = this.ledger.readBeads(rigName);
+    const done = beads.filter((b) => b.status === 'done' || b.outcome === 'SUCCESS');
+    let backfilled = 0;
+
+    for (const bead of done) {
+      try {
+        // Search palace for this bead_id in hall_events
+        const result = await this.palace.search(bead.bead_id, `wing_rig_${rigName}`, 'hall_events');
+        const found = result.results.some((r) => r.room_id === bead.bead_id);
+
+        if (!found) {
+          await this.palace.addDrawer(
+            `wing_rig_${rigName}`,
+            'hall_events',
+            bead.bead_id,
+            JSON.stringify({
+              bead_id: bead.bead_id,
+              task_type: bead.task_type,
+              model: bead.model,
+              outcome: bead.outcome,
+              duration_ms: bead.metrics?.duration_ms,
+            }),
+            `${bead.task_type} ${bead.outcome ?? ''} ${bead.model}`,
+          );
+          backfilled++;
+          console.log(`[Historian:${this.agentId}] Backfilled missing drawer for bead ${bead.bead_id}`);
+        }
+      } catch (err) {
+        console.warn(`[Historian:${this.agentId}] Backfill check failed for ${bead.bead_id}: ${String(err)}`);
+      }
+    }
+
+    if (backfilled > 0) {
+      console.log(`[Historian:${this.agentId}] Backfill complete: ${backfilled}/${done.length} beads re-inserted`);
+    }
+    return backfilled;
+  }
+
   close(): void {
     this.kg.close();
   }

@@ -1,0 +1,19 @@
+{
+  "id": "hook_safeguard_critical_alert",
+  "role": "Safeguard",
+  "trigger": {
+    "event": "SCAN_VIOLATION",
+    "filter": {
+      "outcomeType": "FAILURE"
+    }
+  },
+  "action": {
+    "type": "CONVOY",
+    "payload": {
+      "recipient": "mayor",
+      "message": "SECURITY_VIOLATION: bead {{event.beadId}} rejected at {{event.timestamp}}"
+    }
+  },
+  "enabled": true,
+  "priority": 100
+}

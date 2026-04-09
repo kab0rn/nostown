@@ -42,7 +42,9 @@ export class Ledger {
   private rigsRoot: string;
 
   constructor(rigsRoot?: string) {
-    this.rigsRoot = path.resolve(rigsRoot ?? RIGS_ROOT);
+    // Read env var lazily (at construction time, not module load time) so tests can
+    // set process.env.NOS_RIGS_ROOT in beforeAll before creating a Ledger instance.
+    this.rigsRoot = path.resolve(rigsRoot ?? process.env.NOS_RIGS_ROOT ?? RIGS_ROOT);
   }
 
   private beadsPath(rigName: string): string {

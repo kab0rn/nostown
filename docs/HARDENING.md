@@ -237,21 +237,21 @@ Before NOS Town v1.0 ships, all of the following MUST have passing tests:
 
 | # | Check | Test File | Status |
 |---|---|---|---|
-| 1 | Provider falls back on 429 without data loss | `tests/integration/provider-failover.test.ts` | TODO |
-| 2 | Provider falls back on model_not_found | `tests/integration/provider-failover.test.ts` | TODO |
-| 3 | Ledger append is atomic under concurrent writes | `tests/integration/ledger-concurrency.test.ts` | TODO |
-| 4 | Checksum validation rejects corrupt Beads | `tests/unit/ledger-checksum.test.ts` | TODO |
-| 5 | Convoy signature mismatch quarantines message | `tests/unit/convoy-sign.test.ts` | TODO |
-| 6 | Replay attack rejected by seq validation | `tests/unit/convoy-replay.test.ts` | TODO |
-| 7 | Stalled Polecat triggers POLECAT_STALLED event | `tests/integration/heartbeat-stall.test.ts` | TODO |
-| 8 | Mayor checkpoints plan before dispatch | `tests/unit/mayor-checkpoint.test.ts` | TODO |
-| 9 | MemPalace backfill catches missing Drawers | `tests/integration/historian-backfill.test.ts` | TODO |
-| 10 | KG MIM resolves conflicts correctly | `tests/unit/kg-mim.test.ts` | TODO |
-| 11 | Mayor dispatch blocked without checkpoint | `tests/unit/mayor-dispatch-guard.test.ts` | TODO |
-| 12 | Forged sender with valid HMAC but wrong key is rejected | `tests/unit/convoy-authn.test.ts` | TODO |
-| 13 | Safeguard pool continues after worker loss | `tests/integration/safeguard-pool-failover.test.ts` | TODO |
-| 14 | Per-rig ledger partitions avoid cross-rig lock contention | `tests/integration/ledger-partitioning.test.ts` | TODO |
-| 15 | Critical KG conflicts use role precedence, not MIM | `tests/unit/kg-critical-conflict.test.ts` | TODO |
+| 1 | Provider falls back on 429 without data loss | `tests/integration/provider-failover.test.ts` | ✅ DONE |
+| 2 | Provider falls back on model_not_found | `tests/integration/provider-failover.test.ts` | ✅ DONE |
+| 3 | Ledger append is atomic under concurrent writes | `tests/integration/ledger-concurrency.test.ts` | ✅ DONE |
+| 4 | Checksum validation rejects corrupt Beads | `tests/unit/ledger-checksum.test.ts` | ✅ DONE |
+| 5 | Convoy signature mismatch quarantines message | `tests/unit/convoy-sign.test.ts` | ✅ DONE |
+| 6 | Replay attack rejected by seq validation | `tests/unit/convoy-replay.test.ts` | ✅ DONE |
+| 7 | Stalled Polecat triggers POLECAT_STALLED event | `tests/integration/heartbeat-stall.test.ts` | ✅ DONE |
+| 8 | Mayor checkpoints plan before dispatch | `tests/unit/mayor-checkpoint.test.ts` | ✅ DONE |
+| 9 | MemPalace backfill catches missing Drawers | `tests/integration/historian-backfill.test.ts` | ✅ DONE |
+| 10 | KG MIM resolves conflicts correctly | `tests/unit/kg-mim.test.ts` | ✅ DONE |
+| 11 | Mayor dispatch blocked without checkpoint | `tests/unit/mayor-dispatch-guard.test.ts` | ✅ DONE |
+| 12 | Forged sender with valid HMAC but wrong key is rejected | `tests/unit/convoy-authn.test.ts` | ✅ DONE |
+| 13 | Safeguard pool continues after worker loss | `tests/integration/safeguard-pool-failover.test.ts` | ✅ DONE |
+| 14 | Per-rig ledger partitions avoid cross-rig lock contention | `tests/integration/ledger-partitioning.test.ts` | ✅ DONE |
+| 15 | Critical KG conflicts use role precedence, not MIM | `tests/unit/kg-critical-conflict.test.ts` | ✅ DONE |
 
 ---
 
