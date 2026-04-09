@@ -81,8 +81,10 @@ beforeEach(() => {
 
 describe('Mayor playbook freshness guard', () => {
   it('uses playbook hint when no recent rejections exist', async () => {
-    // First search: playbook match (hall_advice)
+    // AAAK manifest search (hall_facts) → no manifest stored yet
     mockSearch
+      .mockResolvedValueOnce({ results: [] })
+      // First search: playbook match (hall_advice)
       .mockResolvedValueOnce({ results: [{ id: 'pb_1', content: 'Steps: 1. Foo 2. Bar' }] })
       // Second search: freshness check (hall_events) — no rejections
       .mockResolvedValueOnce({ results: [{ id: 'ev_1', content: 'BEAD_RESOLVED: SUCCESS' }] })
@@ -104,8 +106,10 @@ describe('Mayor playbook freshness guard', () => {
   });
 
   it('marks playbook advisory-only when recent Witness rejection exists', async () => {
-    // First search: playbook match
+    // AAAK manifest search → no manifest
     mockSearch
+      .mockResolvedValueOnce({ results: [] })
+      // First search: playbook match
       .mockResolvedValueOnce({ results: [{ id: 'pb_1', content: 'Steps: 1. Foo 2. Bar' }] })
       // Second search: freshness check — has a rejection event
       .mockResolvedValueOnce({
@@ -131,9 +135,10 @@ describe('Mayor playbook freshness guard', () => {
   });
 
   it('proceeds without a playbook when no match found', async () => {
-    // First search: no playbook
+    // AAAK manifest search → no manifest; then playbook search → no match; CoVe → empty
     mockSearch
-      .mockResolvedValueOnce({ results: [] })
+      .mockResolvedValueOnce({ results: [] }) // AAAK
+      .mockResolvedValueOnce({ results: [] }) // no playbook
       // CoVe check
       .mockResolvedValueOnce({ results: [] });
 
@@ -164,6 +169,7 @@ describe('KG safeguard_lockdown blocks playbook freshness', () => {
 
     // Playbook found, no rejection events
     mockSearch
+      .mockResolvedValueOnce({ results: [] }) // AAAK manifest → no manifest
       .mockResolvedValueOnce({ results: [{ id: 'pb_sec', content: 'Security steps' }] })
       .mockResolvedValueOnce({ results: [] })  // freshness: no rejections
       .mockResolvedValueOnce({ results: [] }); // CoVe

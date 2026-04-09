@@ -235,10 +235,12 @@ describe('Gate 8: Full pipeline integration', () => {
     // Mayor's palace instance is the first one created
     const mayorPalace = (MemPalaceClient as jest.Mock).mock.results[0]?.value;
     if (mayorPalace) {
-      // Step 2 (playbooks): empty
+      // Step 1b (AAAK manifest): no manifest stored yet
       mayorPalace.search
         .mockResolvedValueOnce({ results: [] })
-        // Step 3b (CoVe): contains a rejection event
+        // Step 3 (playbooks): empty
+        .mockResolvedValueOnce({ results: [] })
+        // Step 3c (CoVe): contains a rejection event
         .mockResolvedValueOnce({
           results: [{ id: 'evt_1', content: 'BEAD_RESOLVED: rejected — quality below threshold' }],
         });

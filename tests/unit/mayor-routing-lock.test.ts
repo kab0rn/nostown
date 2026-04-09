@@ -110,8 +110,9 @@ describe('Mayor routing lock via RoutingDispatcher', () => {
     jest.spyOn(MemPalaceClient.prototype, 'wakeup').mockRejectedValue(new Error('offline'));
     const pbEntry = { id: 'pb-001', content: playbookContent, wing_id: 'wing_rig_rl-test-rig', hall_type: 'hall_advice', room_id: 'playbook_execute', created_at: new Date().toISOString() };
     jest.spyOn(MemPalaceClient.prototype, 'search')
-      .mockResolvedValueOnce({ results: [pbEntry], total: 1 })
-      .mockResolvedValue({ results: [], total: 0 }); // rejection search returns none
+      .mockResolvedValueOnce({ results: [], total: 0 }) // AAAK manifest search → no manifest
+      .mockResolvedValueOnce({ results: [pbEntry], total: 1 }) // playbook search → found
+      .mockResolvedValue({ results: [], total: 0 }); // rejection search + CoVe → none
     jest.spyOn(MemPalaceClient.prototype, 'saveCheckpoint').mockResolvedValue('ckpt-rl-002');
 
     const plan = await mayor.orchestrate({ description: 'Execute task', task_type: 'execute' });

@@ -133,13 +133,35 @@ export class Mayor {
       }
     }
 
-    // 1. Palace wakeup
+    // 1. Palace status check then wakeup (ROLES.md §Mayor Quality Tuning step 1-2)
+    // getStatus() loads AAAK spec + memory protocol headers before full context load
     let palaceContext = '';
+    try {
+      await this.palace.getStatus(); // non-fatal — wakeup provides actual context
+    } catch {
+      // palace offline or unreachable — proceed to wakeup attempt
+    }
     try {
       const wakeup = await this.palace.wakeup(`wing_rig_${this.rigName}`);
       palaceContext = [wakeup.l0, wakeup.l1].join('\n');
     } catch (err) {
       console.warn(`[Mayor:${this.agentId}] Palace wakeup failed (non-fatal): ${String(err)}`);
+    }
+
+    // 1b. Load AAAK bead manifest for token-efficient context (HISTORIAN.md §AAAK Bead Manifest)
+    // Prepended to palace context if available — compressed token representation of past beads.
+    try {
+      const aaakSearch = await this.palace.search(
+        'aaak manifest bead summary',
+        `wing_rig_${this.rigName}`,
+        'hall_facts',
+      );
+      const manifestEntry = aaakSearch.results.find((r) => r.content.includes('# AAAK'));
+      if (manifestEntry) {
+        palaceContext = `${manifestEntry.content}\n\n${palaceContext}`;
+      }
+    } catch {
+      // non-fatal — AAAK manifest may not exist on first run
     }
 
     // 2. Query cross-rig tunnels for enriched playbook search (ROUTING.md §Cross-Rig Routing)
