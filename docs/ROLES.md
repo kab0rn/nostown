@@ -40,6 +40,9 @@ The Mayor (groq/compound)       ← Agentic orchestrator + memory steward
 - **Task Decomposition:** Mayor must break goals into "Micro-Beads" (< 50 lines of code) to maximize 8B Polecat success rate.
 - **Playbook Lookup:** Before decomposing, Mayor calls `mempalace_search` against the relevant Rig wing + `hall_advice` to check for an existing Playbook match. If found, Polecat is given the Playbook as a Golden Path.
 - **Chain-of-Verification (CoVe):** Mayor must draft the plan, self-critique for dependencies, then query `mempalace_kg_timeline({room})` for any past Witness rejections before assigning to Crew.
+- **Adoption Protocol:** If `MAYOR_MISSING` was emitted for a prior session, the replacement Mayor must first adopt the orphan workflow from `active-convoy`, queue state, and mailbox state before planning any new work.
+- **Dispatch Guard:** Mayor may not emit `BEAD_DISPATCH` until the convoy bus confirms the stored `plan_checkpoint_id`.
+- **Critical Path Annotation:** During decomposition, Mayor computes `fan_out_weight` and marks `critical_path` beads so convoy scheduling is dependency-aware.
 
 **Optimized Prompt:**
 ```markdown
@@ -53,7 +56,8 @@ STRICT PROTOCOL:
 6. DECOMPOSE the goal into discrete, non-overlapping Micro-Beads.
 7. VERIFY that Bead B does not depend on Bead A unless explicitly sequenced in a Convoy.
 8. ASSIGN each Bead to a Polecat. High-risk Beads (Auth/DB) MUST flag `witness_required: true`.
-9. OUTPUT: Return a valid JSON Beads ledger.
+9. ANNOTATE each Bead with `critical_path`, `fan_out_weight`, and `plan_checkpoint_id`.
+10. OUTPUT: Return a valid JSON Beads ledger.
 ```
 
 ---
@@ -127,6 +131,7 @@ kg.add_triple(
 - **Hard Stop:** Any detected credential leakage or destructive CLI commands result in an immediate `LOCKDOWN` signal to the Mayor.
 - **Vulnerability Memory:** Safeguard writes every detected vulnerability pattern to `wing_safeguard / hall_facts / room: vuln-patterns` as a permanent Drawer. Before scanning a new diff, Safeguard reads its diary to apply learned patterns — making it smarter over time without retraining.
 - **Lockdown KG Entry:** Every LOCKDOWN event is written as a KG triple so the Mayor can query the history of lockdowns by room/type.
+- **Pooled Execution:** Safeguard runs as a worker pool with a shared ruleset cache; no production design may assume a singleton Safeguard worker.
 
 **Safeguard Vuln Memory Protocol:**
 ```markdown

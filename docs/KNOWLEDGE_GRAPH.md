@@ -149,15 +149,29 @@ In NOS Town's default single-machine deployment, there is only one MemPalace MCP
 - **Primary Historian node:** The machine running the nightly Historian batch job has authoritative write access to KG routing triples and model demotions.
 - **Relay agents (Polecats, Witnesses):** Write council votes and discovery triples directly without going through the Historian.
 
+### Triple Classes
+
+Each triple MUST declare a semantic class in metadata:
+
+- `critical` — routing locks, ownership, approvals, lockdowns
+- `advisory` — discoveries, notes, playbook hints, preferences
+- `historical` — immutable audit events
+
 ### Eventual Consistency Rules
 
 1. **Timestamping:** Every triple write includes a `created_at` timestamp with millisecond precision. In case of network partition between two MemPalace instances (multi-machine setup), `created_at` is used to order writes on merge.
 
-2. **Most Informative Merge (MIM):** When two conflicting triples exist for the same `(subject, relation)` with overlapping `valid_from`/`valid_to` windows:
-   - Count the fields in each triple's `metadata` JSON object
-   - The triple with more metadata fields wins ("more informative")
-   - If equal metadata richness: the triple with the later `valid_from` wins
-   - Loser triple gets `valid_to = winner.valid_from - 1 day`
+2. **Conflict resolution is class-aware:**
+   - For `critical` triples:
+     1. role precedence (`historian` > `mayor` > `witness` > `safeguard` > `polecat`)
+     2. later `valid_from`
+     3. if still contradictory, mark `conflict_pending` and require human review
+   - For `advisory` triples:
+     1. Most Informative Merge (MIM)
+     2. later `valid_from`
+   - `historical` triples are append-only and never merged
+
+Metadata field count MUST NOT determine the winner for `critical` triples.
 
 3. **Sync Heartbeat:** Every 500ms, the MemPalace server computes:
    ```
@@ -201,6 +215,32 @@ kg.add_triple("llama-3.1-8b", "demoted_from", "typescript_generics",
 kg.query_entity("llama-3.1-8b", as_of="2026-04-10")
 # Returns: demoted_from typescript_generics (active), locked_to expired
 ```
+
+```python
+# Scenario: conflicting critical writes
+# Polecat attempts to overwrite a Mayor ownership triple
+
+kg.add_triple("room_auth-migration", "owned_by", "mayor_01",
+              valid_from="2026-04-09",
+              metadata={"class": "critical", "agent_role": "mayor"})
+
+kg.add_triple("room_auth-migration", "owned_by", "polecat_02",
+              valid_from="2026-04-09",
+              metadata={"class": "critical", "agent_role": "polecat"})
+
+# Result:
+# mayor ownership wins by role precedence; polecat write is invalidated or flagged
+```
+
+### Single-Instance Limits
+
+The default SQLite deployment is suitable for early implementation only.
+
+Guardrails:
+
+- sustained write concurrency target: <= 10 active writers before queueing
+- if p95 KG write latency exceeds 50ms for 5 minutes, enable queued-write mode
+- if p95 exceeds 200ms under expected gate load, the gate does not pass
 
 ---
 

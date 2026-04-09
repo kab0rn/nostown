@@ -19,6 +19,17 @@ To leverage high-performance preview models safely, NOS Town implements a "Stabi
 3. **Deterministic Validation:** Run unit tests and a Safeguard scan.
 4. **Automatic Fallback:** If validation fails or the Preview API returns a 503/429, the system automatically hot-swaps to the Stable Fallback model (e.g., Llama 3.3 70B) for the retry.
 
+### Playbook Freshness Guard
+
+Playbook short-circuiting is allowed only when all of the following are true:
+
+- historical success rate > 90%
+- sample size >= 20
+- no conflicting Witness rejection exists in the last 14 days for the same room/task type
+- no active Safeguard lockdown pattern applies to the same task class
+
+If freshness checks fail, the Playbook may still be attached as advisory context, but routing is not locked directly to the Primary model.
+
 ---
 
 ## Routing Table (v3.0 — Palace-Aware)
@@ -96,6 +107,17 @@ mempalace_search "JWT auth refresh token" --tunnel auth-migration
 ```
 
 This means a proven solution from one project instantly benefits another — without any manual copy-paste.
+
+### Tunnel Safety Guard
+
+Cross-rig tunnels are powerful and potentially leaky. Before using a tunnel result, the Mayor MUST verify:
+
+- same task room name
+- compatible stack or framework family
+- no explicit isolation flag on either rig
+- tunnel result freshness within the configured lookback window
+
+Tunnel hits that fail safety checks are logged as advisory-only, not auto-applied.
 
 ---
 

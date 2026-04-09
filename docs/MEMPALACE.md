@@ -199,6 +199,44 @@ mempalace serve --port 7474
 
 ---
 
+## Deployment Modes
+
+### Mode A — Single Sidecar (Gate 1–2 only)
+
+- one MCP server
+- one SQLite KG writer
+- direct reads and writes
+- suitable for local development and low-concurrency validation only
+
+### Mode B — Queued Write Front Door (Gate 3+ recommended)
+
+- direct read path remains available
+- all write operations pass through a local bounded queue
+- vector writes and KG writes are decoupled
+- queue metrics are exported to observability
+
+### Promotion Criteria
+
+Move from Mode A to Mode B when any of the following is true:
+
+- p95 KG write latency > 50ms during gate tests
+- p95 `mempalace_add_drawer` > 150ms
+- more than 10 concurrent writer agents are required
+
+## Orphan Workflow Recovery
+
+If active beads exist with no live Mayor heartbeat:
+
+1. mark workflow `orphaned`
+2. freeze new dispatch
+3. start or elect a replacement Mayor
+4. replacement Mayor reloads `active-convoy`, outage queue, and outstanding bead checkpoints
+5. replacement Mayor reconciles dependencies before resuming dispatch
+
+No orphaned workflow may resume dispatch until dependency reconciliation completes.
+
+---
+
 ## See Also
 - [ROLES.md](./ROLES.md) — Updated Mayor, Historian, Witness, and Safeguard prompts
 - [HISTORIAN.md](./HISTORIAN.md) — Updated pipeline with incremental checkpointing

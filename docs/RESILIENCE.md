@@ -94,6 +94,26 @@ On startup, Mayor MUST:
 3. Query `hall_events / room: outage-queue` for any queued Beads from a prior outage.
 4. Resume dispatching from the recovered state — do NOT re-decompose goals that are already in the ledger.
 
+### Mayor Crash Detection
+
+The heartbeat monitor emits `MAYOR_MISSING` when all of the following are true:
+
+- no Mayor heartbeat for 2x the configured heartbeat interval
+- an active convoy checkpoint exists
+- unfinished beads remain queued or in progress
+
+### Mayor Replacement Flow
+
+1. Freeze new dispatch
+2. Snapshot queue + `active-convoy` checkpoint
+3. Start replacement Mayor
+4. Replay outstanding mailbox messages idempotently
+5. Adopt orphan beads
+6. Reconcile dependency graph against ledger and checkpoints
+7. Resume dispatch only after reconciliation succeeds
+
+A replacement Mayor MUST NOT re-decompose a goal that already has an active convoy checkpoint unless the workflow is explicitly aborted.
+
 ### Polecat Crash Recovery
 
 If a Polecat crashes mid-task (process killed, context blown, timeout):
@@ -132,7 +152,8 @@ type HeartbeatEvent =
   | { type: 'BEAD_BLOCKED';       bead_id: string; retry_count: number }
   | { type: 'PROVIDER_EXHAUSTED'; model: string; error: string }
   | { type: 'PROVIDER_RECOVERED'; recovered_at: string }
-  | { type: 'MODEL_DEPRECATED';   model: string; fallback: string };
+  | { type: 'MODEL_DEPRECATED';   model: string; fallback: string }
+  | { type: 'MAYOR_MISSING';      last_seen_at: string; active_convoy_id: string };
 ```
 
 The heartbeat monitor does NOT make inference calls. It only reads MemPalace state and monitors the Groq health endpoint (`GET https://api.groq.com/openai/v1/models`).

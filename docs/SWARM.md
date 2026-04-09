@@ -25,11 +25,29 @@ If a bead has been in `STATUS: WAITING` for more than 15 minutes, the heartbeat 
 - The Mayor queries the Knowledge Graph for the full dependency chain.
 - If a circular path is found, the Mayor aborts the chain and escalates to human review.
 
+### 2.1 Critical Path & Deadlock Heuristics
+
+Deadlock detection is graph-aware, not time-only.
+
+In addition to wait time, the Mayor evaluates:
+
+- number of downstream beads blocked by a waiting bead (`fan_out_weight`)
+- whether the waiting bead is on the longest dependency path
+- whether the waiting bead is the sole predecessor of a rendezvous node
+- whether lower-priority non-critical work has bypassed the same bead repeatedly
+
+The Mayor MAY escalate before 15 minutes if:
+
+- `fan_out_weight >= 10`, or
+- the bead is the sole predecessor of a rendezvous node, or
+- the same critical bead has been bypassed by lower-priority work 3 times
+
 ### 3. Adaptive Throttling (Backpressure)
 To prevent overwhelming the system, the Mayor enforces in-flight limits:
 - **Max In-Flight Polecat Beads**: 50
 - **Max In-Flight Witness Beads**: 20
 - Before decomposing a new goal, the Mayor calls `mempalace_kg_query("active_beads_count")`. If limits are exceeded, the Mayor enters a `WAITING_FOR_CAPACITY` state.
+- Queue draining is dependency-aware: critical-path and high-fan-out predecessor beads are drained before low-impact standalone work.
 
 ---
 
@@ -69,9 +87,11 @@ Broadcasts a message to all roles. Used for priority overrides or global state c
 
 - [ ] Topological sort detects cycles in planning stage.
 - [ ] Heartbeat monitor catches beads waiting > 15min.
+- [ ] Critical-path starvation is detected before 15min timeout when fan-out is high.
 - [ ] Mayor stops generation when in-flight limits reached.
 - [ ] Rendezvous beads wait for all prerequisites correctly.
 - [ ] Failed beads correctly block dependent chains.
+- [ ] High-fan-out predecessor beads are scheduled ahead of low-priority unrelated work.
 
 ---
 

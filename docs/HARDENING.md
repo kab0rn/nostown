@@ -61,6 +61,19 @@ interface AgentCheckpoint {
 }
 ```
 
+### 1.2.1 Mayor Dispatch Invariant
+
+Mayor checkpointing is a hard invariant, not a best-effort behavior.
+
+Required flow:
+
+1. Mayor writes the full Convoy plan to `wing_mayor / hall_facts / room: active-convoy`
+2. MemPalace returns a durable `plan_checkpoint_id`
+3. Mayor includes `plan_checkpoint_id` on every `BEAD_DISPATCH`
+4. `src/convoys/bus.ts` verifies the checkpoint exists before emitting the first convoy
+
+If checkpoint verification fails, dispatch is aborted with `MAYOR_CHECKPOINT_MISSING`.
+
 ### 1.3 Heartbeat Monitoring
 
 The `src/monitor/heartbeat.ts` module runs as a background process (not an agent) and is responsible for:
@@ -93,13 +106,23 @@ The `beads.jsonl` ledger is the source of truth. Its integrity rules:
 - **Schema validation:** Every Bead written to the ledger MUST be validated against the Bead schema (see [HOOK_SCHEMA.md](./HOOK_SCHEMA.md)) before append. Invalid Beads are rejected and logged to `hall_events` with `status: SCHEMA_ERROR`.
 - **Checksum:** Each Bead entry MUST include a `checksum` field: `sha256(JSON.stringify(bead_without_checksum))`. The Historian validates checksums during nightly mining and flags corrupted entries.
 
+### 2.1.1 Ledger Partitioning
+
+Ledger writes are partitioned per rig to avoid global mutex contention:
+
+- `rigs/{rig}/beads/current.jsonl`
+- optional rollover: `rigs/{rig}/beads/archive/YYYY-MM-DD.jsonl`
+- mutex scope is per-rig current ledger, never global across all rigs
+- each segment stores `{segment_id, bead_count, segment_checksum}`
+- Historian reconciliation reads segment manifests first, then only scans segments requiring validation
+
 ### 2.2 MemPalace Consistency
 
 The MemPalace KG (SQLite) and ChromaDB vector store are eventually consistent. Rules:
 
 - **Write-through:** When a Polecat writes a Drawer, it writes to MemPalace first, then appends to `beads.jsonl`. Not the reverse. This ensures MemPalace is never behind the ledger.
 - **Historian reconciliation:** During the nightly run, the Historian compares `beads.jsonl` entries against MemPalace Drawers by `bead_id`. Any ledger entry without a corresponding Drawer is re-inserted (backfill mode).
-- **KG conflict resolution — Most Informative Merge (MIM):** If two concurrent agents write conflicting triples (same subject+relation, different objects with overlapping validity windows), the Historian applies MIM: the triple with more metadata fields wins. If equal, the later `valid_from` wins.
+- **KG conflict resolution — class-aware precedence:** Critical triples and advisory triples use different conflict rules (see [KNOWLEDGE_GRAPH.md](./KNOWLEDGE_GRAPH.md)).
 - **State hash exchange:** Every 500ms, the MemPalace MCP server computes a rolling SHA-256 hash of the last 100 KG writes and exposes it via `mempalace_status`. Agents can detect divergence by comparing their local last-known hash against the server hash.
 
 ### 2.3 Convoy Sequencing
@@ -118,27 +141,32 @@ See [CONVOYS.md](./CONVOYS.md) for the full Convoy schema and verification proto
 
 ### 3.1 Payload Integrity
 
-Every inter-agent Convoy message MUST be signed before dispatch and verified on receipt:
+Every inter-agent Convoy message MUST be signed before dispatch and verified on receipt.
+
+Sender authenticity uses per-role Ed25519 keys. Cluster-local HMAC is optional and supplements transport integrity only.
 
 ```typescript
 // src/convoys/sign.ts
 import { createHmac } from 'crypto';
 
 export function signConvoy(payload: object, senderId: string, seq: number): string {
-  const canonical = JSON.stringify({ payload, sender_id: senderId, seq });
-  return createHmac('sha256', process.env.NOS_CONVOY_SECRET!)
-    .update(canonical)
-    .digest('hex');
+  const canonical = canonicalize({ payload, sender_id: senderId, seq });
+  return signWithRoleKey(canonical, senderId);
 }
 
 export function verifyConvoy(msg: ConvoyMessage): boolean {
-  const expected = signConvoy(msg.payload, msg.header.sender_id, msg.header.seq);
-  return expected === msg.signature;
+  const canonical = canonicalize({
+    payload: msg.payload,
+    sender_id: msg.header.sender_id,
+    seq: msg.header.seq
+  });
+  return verifyRoleSignature(canonical, msg.signature, msg.header.sender_id);
 }
 ```
 
-- `NOS_CONVOY_SECRET` is a required env var — startup MUST fail if absent.
-- Signature mismatches are logged to Historian and the convoy is quarantined (not re-delivered).
+- `NOS_ROLE_KEY_DIR` is required — startup MUST fail if no sender keys are available.
+- `NOS_CONVOY_SECRET` is optional and used only for cluster-local MAC verification.
+- Signature mismatches or sender/type authorization failures are logged to Historian and the convoy is quarantined (not re-delivered).
 
 ### 3.2 Replay Attack Prevention
 
@@ -174,6 +202,18 @@ Every `FILE_WRITE` action must be intercepted by the Safeguard:
    - `APPROVED`: The Safeguard forwards the convoy to the target role (or executor).
    - `REJECTED`: The Safeguard emits a `SECURITY_VIOLATION` event and blocks the write.
 
+### 4.1.1 Safeguard Pooling
+
+Safeguard is a pooled service, not a singleton.
+
+Requirements:
+
+- Minimum pool size: 2 in development, 4 in staging/production
+- Shared read-through cache of known vulnerability patterns
+- Per-worker in-memory diary cache refreshed every 60 seconds
+- Queue depth and scan latency exported as metrics
+- Worker loss MUST degrade throughput, not halt the file-write path
+
 ### 4.2 Vulnerability Memory (Palace Wing)
 
 The Safeguard maintains a dedicated MemPalace Wing (`wing_safeguard`) containing:
@@ -207,6 +247,11 @@ Before NOS Town v1.0 ships, all of the following MUST have passing tests:
 | 8 | Mayor checkpoints plan before dispatch | `tests/unit/mayor-checkpoint.test.ts` | TODO |
 | 9 | MemPalace backfill catches missing Drawers | `tests/integration/historian-backfill.test.ts` | TODO |
 | 10 | KG MIM resolves conflicts correctly | `tests/unit/kg-mim.test.ts` | TODO |
+| 11 | Mayor dispatch blocked without checkpoint | `tests/unit/mayor-dispatch-guard.test.ts` | TODO |
+| 12 | Forged sender with valid HMAC but wrong key is rejected | `tests/unit/convoy-authn.test.ts` | TODO |
+| 13 | Safeguard pool continues after worker loss | `tests/integration/safeguard-pool-failover.test.ts` | TODO |
+| 14 | Per-rig ledger partitions avoid cross-rig lock contention | `tests/integration/ledger-partitioning.test.ts` | TODO |
+| 15 | Critical KG conflicts use role precedence, not MIM | `tests/unit/kg-critical-conflict.test.ts` | TODO |
 
 ---
 

@@ -249,6 +249,24 @@ npx jest --testPathPattern=e2e
 
 ---
 
+## Gate-by-Gate Risk Tracking
+
+| Gate | Risk to Surface | How to Look for It | Exit Criterion |
+|---|---|---|---|
+| Gate 1 | MemPalace sidecar saturation | Load test 5, 10, 15 concurrent writes; measure p95 KG and drawer write latency | p95 KG write <= 50ms and p95 drawer write <= 150ms |
+| Gate 1 | MemPalace packaging / sidecar reality gap | Build or pin actual sidecar artifact; verify startup, tool calls, schema creation | Sidecar starts cleanly, tools respond, DB schema created |
+| Gate 2 | Mayor orphan workflow risk | Kill Mayor mid-dispatch during integration run | Replacement Mayor resumes without duplicate bead creation |
+| Gate 2 | Playbook freshness drift | Replay stale playbook scenarios with recent rejections | Stale playbooks are advisory-only, not route-locking |
+| Gate 3 | Forged convoy sender | Inject valid-HMAC but wrong-key message | Receiver rejects with `AUTHN_FAILED` or `AUTHZ_DENIED` |
+| Gate 3 | Queue starvation of critical beads | Run mixed fan-out workload under backpressure | Critical-path / high-fan-out predecessors drain first |
+| Gate 4 | KG critical conflict corruption | Simulate conflicting routing / ownership writes from different roles | Role precedence resolves critical conflicts correctly |
+| Gate 4 | Cross-rig tunnel leakage | Create same-room, incompatible-stack rigs | Tunnel results are blocked or advisory-only |
+| Gate 5 | Hook-triggered command injection | Fuzz substitution inputs and command payloads | Sanitizer blocks unsafe expansion |
+| Gate 6 | Safeguard bottleneck | Burst 20–50 diff scans with one worker and with pool | P95 scan latency and queue depth stay within thresholds |
+| Gate 6 | Ledger mutex contention | Parallel writes across multiple rigs | Per-rig partitions keep lock waits below threshold |
+| Gate 7 | Deadlock missed by time-only heuristics | Create high-fan-out blocked predecessor | Early escalation occurs before 15-minute timeout |
+| Gate 8 | Architecture/spec drift | Full end-to-end trace review against invariants | All critical invariants proven by tests + telemetry |
+
 ## Implementation Gates
 
 To ensure the gastown team can build a complete project plan, NOS Town's implementation is organized into sequential gates. Each gate must be completed and tested before moving to the next.
@@ -389,14 +407,18 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 
 Follow this sequence for fastest path to working system:
 
-1. **Gate 1** (Foundation) — 2-3 days
-2. **Gate 2** (Roles & Routing) — 3-4 days
-3. **Gate 3** (Convoys) — 2-3 days
-4. **Gate 4** (Knowledge Graph) — 3-4 days
-5. **Gate 5** (Hooks) — 2-3 days
-6. **Gate 6** (Resilience) — 2-3 days
-7. **Gate 7** (Swarm) — 3-4 days
-8. **Gate 8** (Full Stack Test) — 2-3 days
+1. **MemPalace client + sidecar reality check**
+2. **Groq provider wrapper**
+3. **Convoy authn/authz primitives**
+4. **Ledger partitioning**
+5. **Polecat**
+6. **Witness**
+7. **Mayor**
+8. **Safeguard pool**
+9. **KG conflict-class logic**
+10. **Swarm coordinator**
+11. **Historian**
+12. **Full-stack testing**
 
 **Total**: ~20-28 days for full implementation
 
@@ -412,6 +434,15 @@ Use the checkboxes in each gate to track implementation progress. All checkboxes
 4. Check off all boxes
 5. Proceed to next gate
 
+## Known Risks Register
+
+The living risk register is tracked in [RISKS.md](./RISKS.md). Every gate review MUST:
+
+1. update risk status
+2. attach metric evidence
+3. attach failing or passing test references
+4. document mitigation shipped or deferred
+
 ---
 
 ## See Also
@@ -419,3 +450,17 @@ Use the checkboxes in each gate to track implementation progress. All checkboxes
 - [MEMPALACE.md](./MEMPALACE.md) — Persistent memory details.
 - [ROUTING.md](./ROUTING.md) — How the Mayor chooses roles.
 - [RESILIENCE.md](./RESILIENCE.md) — Handling failures and outages.
+
+## Architecture Corrections Required Before v1.0
+
+The documentation defines the target architecture, but the following corrections are mandatory during implementation:
+
+1. Mayor dispatch must be checkpoint-gated
+2. Convoy sender identity must use per-role keys, not shared HMAC alone
+3. MemPalace single-sidecar mode is development-only until measured under load
+4. Safeguard must run as a pool
+5. Ledger writes must be partitioned per rig
+6. Critical KG conflicts must use role precedence, not MIM
+7. Swarm queueing must prioritize dependency criticality, not FIFO only
+
+These are implementation-blocking invariants, not optional hardening.
