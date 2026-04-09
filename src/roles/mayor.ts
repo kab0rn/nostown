@@ -551,6 +551,36 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
       }
     }
 
+    // CASCADE BLOCKING: if any prerequisite has FAILED, emit CONVOY_BLOCKED and abort dispatch
+    // (HARDENING.md §2.3 — failed predecessor blocks the full dependency chain)
+    if (bead.needs.length > 0) {
+      const allBeads = this.ledger.readBeads(this.rigName);
+      const failedIds = new Set(
+        allBeads
+          .filter((b) => b.status === 'failed' || b.outcome === 'FAILURE')
+          .map((b) => b.bead_id),
+      );
+      const failedDeps = bead.needs.filter((id) => failedIds.has(id));
+      if (failedDeps.length > 0) {
+        const blocked: Bead = {
+          ...bead,
+          status: 'blocked',
+          updated_at: new Date().toISOString(),
+        };
+        await this.ledger.appendBead(this.rigName, blocked);
+        // Emit CONVOY_BLOCKED to Mayor's own mailbox so the orchestrator can act
+        console.warn(
+          `[Mayor:${this.agentId}] CONVOY_BLOCKED: bead ${bead.bead_id} has failed prerequisites: ${failedDeps.join(', ')}`,
+        );
+        this.emitHeartbeat?.({
+          type: 'CONVOY_BLOCKED',
+          bead_id: bead.bead_id,
+          reason: `predecessor_failed:${failedDeps.join(',')}`,
+        } as Parameters<HeartbeatEmitter>[0]);
+        return;
+      }
+    }
+
     // OUTAGE GUARD: during provider outage, queue bead instead of dispatching (RESILIENCE.md)
     if (this.outageActive) {
       console.log(`[Mayor:${this.agentId}] Outage active — queuing bead ${bead.bead_id} (${this.outageQueue.length + 1} in queue)`);

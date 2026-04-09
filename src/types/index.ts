@@ -85,7 +85,8 @@ export type HeartbeatEvent =
   | { type: 'PROVIDER_RECOVERED'; recovered_at: string }
   | { type: 'MODEL_DEPRECATED'; model: string; fallback: string }
   | { type: 'MAYOR_MISSING'; last_seen_at: string; active_convoy_id: string }
-  | { type: 'POTENTIAL_DEADLOCK'; bead_id: string; stall_duration_ms: number; reason: 'HIGH_FAN_OUT' | 'SOLE_PREDECESSOR' | 'STARVATION' };
+  | { type: 'POTENTIAL_DEADLOCK'; bead_id: string; stall_duration_ms: number; reason: 'HIGH_FAN_OUT' | 'SOLE_PREDECESSOR' | 'STARVATION' }
+  | { type: 'CONVOY_BLOCKED'; bead_id: string; reason: string };
 
 export interface TriggerFilter {
   beadId?: string;
