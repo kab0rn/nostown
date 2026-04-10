@@ -8,7 +8,9 @@ import { ConvoyBus } from '../convoys/bus.js';
 import { buildSignedConvoy } from '../convoys/sign.js';
 import { loadPrivateKey } from '../convoys/sign.js';
 import { RoutingDispatcher } from '../routing/dispatch.js';
-import type { Bead, ConvoyMessage, InferenceParams, HeartbeatEvent, PlaybookEntry } from '../types/index.js';
+import { Refinery } from './refinery.js';
+import type { Bead, ConvoyMessage, InferenceParams, HeartbeatEvent, PlaybookEntry, ReviewVerdict } from '../types/index.js';
+import type { RefineryAnalysis } from './refinery.js';
 import { Ledger as LedgerClass } from '../ledger/index.js';
 import { DEFAULT_IN_FLIGHT_LIMITS, isRendezvousNode, detectCycles, swarmRebalanceLimits, detectStackFamily, areStacksCompatible } from '../swarm/tools.js';
 import { auditLog } from '../hardening/audit.js';
@@ -24,6 +26,8 @@ export interface MayorConfig {
   kgPath?: string;
   heartbeatIntervalMs?: number;
   emitHeartbeat?: HeartbeatEmitter;
+  /** Optional Refinery instance for Witness-rejection escalation (ROLES.md §Refinery) */
+  refinery?: Refinery;
 }
 
 export interface Task {
@@ -47,6 +51,7 @@ export class Mayor {
   private palace: MemPalaceClient;
   private kg: KnowledgeGraph;
   private router: RoutingDispatcher;
+  private refinery: Refinery | null;
   private heartbeatIntervalMs: number;
   private emitHeartbeat: HeartbeatEmitter | null;
   private lastHeartbeatAt: Date = new Date();
@@ -63,6 +68,7 @@ export class Mayor {
     this.palace = new MemPalaceClient(config.palaceUrl);
     this.kg = new KnowledgeGraph(config.kgPath);
     this.router = new RoutingDispatcher(this.kg);
+    this.refinery = config.refinery ?? null;
     this.heartbeatIntervalMs = config.heartbeatIntervalMs ?? 60_000;
     this.emitHeartbeat = config.emitHeartbeat ?? null;
   }
@@ -765,6 +771,48 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
       historian: 'llama-3.1-8b-instant',
     };
     return models[role] ?? 'llama-3.3-70b-versatile';
+  }
+
+  /**
+   * Escalate a Witness-rejected bead to the Refinery for deep root-cause analysis.
+   * Per ROLES.md §Refinery: triggered when Witness council unanimously rejects AND:
+   *   - attempts >= 2 (any task type), OR
+   *   - task_type is 'architecture' or 'security' (escalate immediately on first rejection)
+   *
+   * Returns null if escalation conditions are not met or Refinery is not configured.
+   * Emits REFINERY_ESCALATION audit event on escalation.
+   */
+  async escalateToRefinery(
+    bead: Bead,
+    verdict: ReviewVerdict,
+    attempts: number,
+    diff?: string,
+  ): Promise<RefineryAnalysis | null> {
+    if (!this.refinery) return null;
+    if (verdict.approved) return null;
+
+    const archOrSecurity = ['architecture', 'security'].includes(bead.task_type);
+    const thresholdMet = attempts >= 2 || archOrSecurity;
+    if (!thresholdMet) return null;
+
+    auditLog(
+      'REFINERY_ESCALATION',
+      this.agentId,
+      bead.bead_id ?? 'unknown',
+      `task_type=${bead.task_type} attempts=${attempts} score=${verdict.score}`,
+    );
+
+    const analysis = await this.refinery.analyze(
+      bead.task_description ?? '',
+      bead.task_type,
+      {
+        witnessReason: verdict.reason ?? `Score ${verdict.score} — all judges rejected`,
+        attempts,
+        diff,
+      },
+    );
+
+    return analysis;
   }
 
   close(): void {

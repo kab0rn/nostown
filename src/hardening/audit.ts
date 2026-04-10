@@ -16,7 +16,8 @@ export type AuditEventType =
   | 'KEY_LOADED'
   | 'AUTH_FAILED'
   | 'AUTHZ_DENIED'
-  | 'MAYOR_ADOPTION';  // Orphan workflow adoption (OBSERVABILITY.md §Audit Logging)
+  | 'MAYOR_ADOPTION'   // Orphan workflow adoption (OBSERVABILITY.md §Audit Logging)
+  | 'REFINERY_ESCALATION';  // Witness unanimous rejection → Refinery (ROLES.md §Refinery)
 
 export interface AuditEntry {
   ts: string;
