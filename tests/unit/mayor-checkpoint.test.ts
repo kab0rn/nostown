@@ -134,14 +134,28 @@ describe('Mayor checkpoint before dispatch (#8)', () => {
   });
 
   it('throws WAITING_FOR_CAPACITY when in-flight limit is exceeded', async () => {
-    // Pass a very small limit that the ledger (empty) won't hit,
-    // but we can force it by setting limit to 0.
+    // Use a dedicated rig for this test to avoid polluting the shared ckpt-rig ledger.
+    // Dynamic rebalance restores defaults for 0 bpm, so we must exceed DEFAULT (50).
+    const capMayor = new Mayor({ agentId: 'mayor_ckpt', rigName: 'cap-rig', kgPath: TEST_DB });
+    const { Ledger: LedgerCls } = await import('../../src/ledger/index');
+    const ledger = new LedgerCls(TEST_RIGS_ROOT);
+    for (let i = 0; i < 51; i++) {
+      await ledger.appendBead('cap-rig', LedgerCls.createBead({
+        role: 'polecat',
+        task_type: 'execute',
+        model: 'test',
+        rig: 'cap-rig',
+        status: 'in_progress',
+        plan_checkpoint_id: 'ckpt-cap-test',
+        bead_id: `cap-bead-${i.toString().padStart(3, '0')}`,
+      }));
+    }
+
     await expect(
-      mayor.orchestrate(
-        { description: 'Should be blocked' },
-        { maxPolecatBeads: 0, maxWitnessBeads: 20 },
-      ),
+      capMayor.orchestrate({ description: 'Should be blocked' }),
     ).rejects.toThrow(/WAITING_FOR_CAPACITY/);
+
+    capMayor.close();
   });
 
   it('proceeds normally when in-flight count is below limit', async () => {

@@ -5,6 +5,7 @@ import { KnowledgeGraph } from '../kg/index.js';
 import { MemPalaceClient } from '../mempalace/client.js';
 import { GroqProvider } from '../groq/provider.js';
 import { GroqBatchClient } from '../groq/batch.js';
+import { detectStackFamily } from '../swarm/tools.js';
 import type { Bead, InferenceParams, PlaybookEntry } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -323,6 +324,9 @@ export class Historian {
       ? await this.generatePlaybooksBatch(eligible)
       : await this.generatePlaybooksSequential(eligible);
 
+    // Detect dominant stack family for this rig — included in playbook metadata for tunnel safety guard
+    const rigStack = detectStackFamily(beads);
+
     for (const { ctx, playbook } of playbookResults) {
       if (!playbook) continue;
       const { taskType, stats, successRate, bestModel } = ctx;
@@ -332,6 +336,9 @@ export class Historian {
         success_rate: successRate,
         sample_size: stats.success + stats.fail,
         last_updated: new Date().toISOString(),
+        // Stack family + rig for cross-rig tunnel safety guard (ROUTING.md §Tunnel Safety Guard)
+        stack: rigStack,
+        rig: rigName,
       };
 
       try {

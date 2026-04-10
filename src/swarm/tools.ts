@@ -242,3 +242,54 @@ export function findForkGroups(beads: Bead[]): Map<string, Bead[]> {
 
   return groups;
 }
+
+/**
+ * Detect the dominant tech stack family from a set of beads.
+ * Used by the Historian to tag playbooks and by the Mayor to enforce tunnel safety.
+ * Per ROUTING.md §Tunnel Safety Guard: cross-rig tunnel results require compatible stack family.
+ *
+ * Returns one of: 'typescript' | 'python' | 'go' | 'java' | 'rust' | 'generic'
+ */
+export function detectStackFamily(beads: Bead[]): string {
+  const STACK_PATTERNS: Array<[RegExp, string]> = [
+    [/typescript|\.ts\b|tsx|node|npm|next\.?js|nestjs|express|eslint|jest/i, 'typescript'],
+    [/python|\.py\b|pip|django|flask|fastapi|pytest|pydantic|uv\b/i, 'python'],
+    [/golang|\bgo\b|\.go\b|goroutine|gin\b|echo\b|fiber\b/i, 'go'],
+    [/java\b|\.java\b|maven|gradle|spring|junit|kotlin/i, 'java'],
+    [/rust\b|\.rs\b|cargo\b|tokio\b|actix\b/i, 'rust'],
+  ];
+
+  const votes = new Map<string, number>();
+
+  for (const bead of beads) {
+    const text = `${bead.task_type ?? ''} ${bead.task_description ?? ''} ${bead.model ?? ''}`;
+    for (const [pattern, stack] of STACK_PATTERNS) {
+      if (pattern.test(text)) {
+        votes.set(stack, (votes.get(stack) ?? 0) + 1);
+      }
+    }
+  }
+
+  if (votes.size === 0) return 'generic';
+
+  // Return the stack with the most votes
+  let best = 'generic';
+  let bestCount = 0;
+  for (const [stack, count] of votes.entries()) {
+    if (count > bestCount) { best = stack; bestCount = count; }
+  }
+  return best;
+}
+
+/**
+ * Check whether two stack families are compatible for tunnel playbook sharing.
+ * Per ROUTING.md §Tunnel Safety Guard: incompatible stacks must be advisory-only.
+ */
+export function areStacksCompatible(stackA: string, stackB: string): boolean {
+  if (stackA === stackB) return true;
+  if (stackA === 'generic' || stackB === 'generic') return true;
+  // typescript↔javascript are compatible (same ecosystem)
+  const jsFamily = new Set(['typescript', 'javascript']);
+  if (jsFamily.has(stackA) && jsFamily.has(stackB)) return true;
+  return false;
+}

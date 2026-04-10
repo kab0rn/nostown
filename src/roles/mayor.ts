@@ -10,7 +10,7 @@ import { loadPrivateKey } from '../convoys/sign.js';
 import { RoutingDispatcher } from '../routing/dispatch.js';
 import type { Bead, ConvoyMessage, InferenceParams, HeartbeatEvent, PlaybookEntry } from '../types/index.js';
 import { Ledger as LedgerClass } from '../ledger/index.js';
-import { DEFAULT_IN_FLIGHT_LIMITS, isRendezvousNode, detectCycles } from '../swarm/tools.js';
+import { DEFAULT_IN_FLIGHT_LIMITS, isRendezvousNode, detectCycles, swarmRebalanceLimits, detectStackFamily, areStacksCompatible } from '../swarm/tools.js';
 import { v4 as uuidv4 } from 'uuid';
 
 export type HeartbeatEmitter = (event: HeartbeatEvent) => void;
@@ -147,12 +147,29 @@ export class Mayor {
    * 5. Dispatch beads via convoy bus
    */
   async orchestrate(task: Task, inFlightLimits = DEFAULT_IN_FLIGHT_LIMITS): Promise<DispatchPlan> {
-    // 0. Adaptive backpressure: check in-flight limits before decomposing (SWARM.md §3)
+    // 0. Adaptive backpressure: dynamically rebalance limits using live metrics (SWARM.md §3)
     const currentBeads = this.ledger.readBeads(this.rigName);
+
+    // Compute throughput and error rate from the last 60 s of completed beads
+    const oneMinuteAgo = new Date(Date.now() - 60_000).toISOString();
+    const recentBeads = currentBeads.filter(
+      (b) => (b.updated_at ?? b.created_at) >= oneMinuteAgo && b.status !== 'pending' && b.status !== 'in_progress',
+    );
+    const recentFailed = recentBeads.filter((b) => b.outcome === 'FAILURE').length;
+    const beadsPerMinute = recentBeads.length;
+    const errorRate = recentBeads.length > 0 ? recentFailed / recentBeads.length : 0;
+
+    const adjustedLimits = swarmRebalanceLimits(inFlightLimits, { beadsPerMinute, errorRate });
+    if (adjustedLimits.maxPolecatBeads !== inFlightLimits.maxPolecatBeads) {
+      console.log(
+        `[Mayor:${this.agentId}] Swarm limits adjusted: maxPolecats ${inFlightLimits.maxPolecatBeads}→${adjustedLimits.maxPolecatBeads} (${beadsPerMinute} bpm, ${(errorRate * 100).toFixed(1)}% err)`,
+      );
+    }
+
     const inProgressCount = currentBeads.filter((b) => b.status === 'in_progress').length;
-    if (inProgressCount >= inFlightLimits.maxPolecatBeads) {
+    if (inProgressCount >= adjustedLimits.maxPolecatBeads) {
       throw new Error(
-        `Mayor WAITING_FOR_CAPACITY: ${inProgressCount} beads in-flight (limit: ${inFlightLimits.maxPolecatBeads})`,
+        `Mayor WAITING_FOR_CAPACITY: ${inProgressCount} beads in-flight (limit: ${adjustedLimits.maxPolecatBeads})`,
       );
     }
 
@@ -212,6 +229,9 @@ export class Mayor {
       // palace unavailable — use local wing only
     }
 
+    // Detect local rig stack for tunnel safety guard (ROUTING.md §Tunnel Safety Guard)
+    const localStack = detectStackFamily(currentBeads);
+
     // 3. Check playbooks in MemPalace with freshness guard (ROUTING.md §Playbook Freshness Guard)
     // Search all tunnel-connected wings for cross-rig playbooks
     let playbookHint = '';
@@ -219,10 +239,34 @@ export class Mayor {
     try {
       // Search primary wing first, then tunnel wings if no fresh result found
       let searchResult = await this.palace.search(task.description, tunnelWings[0], 'hall_advice');
+      // Tunnel safety guard: only promote cross-rig results if stack is compatible
       if (searchResult.results.length === 0 && tunnelWings.length > 1) {
         for (const wing of tunnelWings.slice(1)) {
-          searchResult = await this.palace.search(task.description, wing, 'hall_advice');
-          if (searchResult.results.length > 0) break;
+          const tunnelResult = await this.palace.search(task.description, wing, 'hall_advice');
+          if (tunnelResult.results.length > 0) {
+            // Check stack compatibility before using this tunnel result (ROUTING.md §Tunnel Safety Guard)
+            let tunnelStack = 'generic';
+            try {
+              const pb = JSON.parse(tunnelResult.results[0].content) as { stack?: string };
+              tunnelStack = pb.stack ?? 'generic';
+            } catch { /* non-parseable — treat as generic */ }
+
+            if (areStacksCompatible(localStack, tunnelStack)) {
+              searchResult = tunnelResult;
+            } else {
+              console.log(
+                `[Mayor:${this.agentId}] Tunnel safety guard: skipping ${wing} (stack ${tunnelStack} incompatible with local ${localStack}) — advisory-only`,
+              );
+              // Attach as advisory hint even if not route-locked
+              try {
+                const pb = JSON.parse(tunnelResult.results[0].content) as Partial<PlaybookEntry>;
+                if (pb.task_type) {
+                  playbookHint = `[Cross-rig advisory only — incompatible stack]: ${tunnelResult.results[0].content.slice(0, 300)}`;
+                }
+              } catch { /* non-fatal */ }
+            }
+            if (searchResult.results.length > 0) break;
+          }
         }
       }
       const search = searchResult;
