@@ -8,6 +8,10 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_DIR"
 
+if [[ -f "$PROJECT_DIR/.env" ]]; then
+    set -a && source "$PROJECT_DIR/.env" && set +a
+fi
+
 if [[ ! -d node_modules ]]; then
     echo "[NOS Town] Installing dependencies..."
     npm install

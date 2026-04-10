@@ -7,6 +7,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 PALACE_DIR="$PROJECT_DIR/mempalace-server"
 
+if [[ -f "$PROJECT_DIR/.env" ]]; then
+    set -a && source "$PROJECT_DIR/.env" && set +a
+fi
+
 MEMPALACE_PORT="${MEMPALACE_PORT:-7474}"
 MEMPALACE_DB="${MEMPALACE_DB:-$PROJECT_DIR/palace-db/palace.sqlite}"
 
