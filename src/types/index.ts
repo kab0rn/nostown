@@ -168,12 +168,14 @@ export interface ScanResult {
 }
 
 export interface PlaybookEntry {
-  id: string;
+  id?: string;
   title: string;
   task_type: string;
   steps: string[];
   model_hint?: string;
-  created_at: string;
+  success_rate?: number;
+  sample_size?: number;
+  created_at?: string;
 }
 
 export const ROLE_PRECEDENCE: Record<string, number> = {

@@ -252,6 +252,44 @@ Before NOS Town v1.0 ships, all of the following MUST have passing tests:
 | 13 | Safeguard pool continues after worker loss | `tests/integration/safeguard-pool-failover.test.ts` | ✅ DONE |
 | 14 | Per-rig ledger partitions avoid cross-rig lock contention | `tests/integration/ledger-partitioning.test.ts` | ✅ DONE |
 | 15 | Critical KG conflicts use role precedence, not MIM | `tests/unit/kg-critical-conflict.test.ts` | ✅ DONE |
+| 16 | KGSyncMonitor reconciliation delegates to class-aware KG.resolveConflict() | `tests/integration/playbook-freshness.test.ts` | ✅ DONE |
+| 17 | MemPalace write queue serializes concurrent writes without corruption | `tests/integration/mempalace-write-contention.test.ts` | ✅ DONE |
+| 18 | Mayor orphan adoption is idempotent — no duplicate beads created | `tests/integration/mayor-adoption.test.ts` | ✅ DONE |
+| 19 | MAYOR_ADOPTION audit event emitted on orphan workflow adoption | `tests/integration/mayor-adoption.test.ts` | ✅ DONE |
+| 20 | Priority-aware draining: critical-path beads drain before low-priority | `tests/integration/swarm-priority.test.ts` | ✅ DONE |
+| 21 | Cross-rig tunnel safety guard blocks incompatible stacks | `tests/integration/tunnel-safety.test.ts` | ✅ DONE |
+| 22 | Hook injection: allow-list + sanitizer blocks end-to-end | `tests/security/hook-injection.test.ts` | ✅ DONE |
+| 23 | Historian diary entry written as AAAK-compressed manifest (not plain text) | `tests/unit/historian-nightly-resume.test.ts` | ✅ DONE |
+
+---
+
+## Pillar 5: Hook Variable Substitution Allow-List
+
+Hooks support template variables via `{{variable}}` syntax. To prevent injection attacks through event data:
+
+1. **Allow-list:** Only these five paths are substitutable:
+   `event.beadId`, `event.outcome`, `event.timestamp`, `event.role`, `event.modelId`
+   All other paths return the original `{{placeholder}}` unchanged.
+
+2. **Sanitization:** Every substituted value passes through `sanitizeHookValue()` before reaching the action executor. Blocked patterns (shell metacharacters, command substitution, template literals, null bytes, path traversal) result in an empty string — never the raw payload.
+
+3. **Disabled guard:** `enabled: false` hooks never execute, even on matching triggers.
+
+**Implementation:** `src/hooks/executor.ts`, `src/hardening/sanitize.ts`
+**Test:** `tests/unit/hook-injection-fuzz.test.ts`, `tests/security/hook-injection.test.ts`
+
+---
+
+## Pillar 6: KGSyncMonitor Class-Aware Conflict Resolution
+
+`KGSyncMonitor.mergeTriple()` MUST delegate conflict resolution to `KnowledgeGraph.resolveConflict()` — which is class-aware — rather than applying MIM unconditionally.
+
+- `critical` triples → role precedence (historian > mayor > witness > safeguard > polecat)
+- `advisory` triples → Most Informative Merge (MIM)
+- `historical` triples → append-only (no merge)
+
+**Implementation:** `src/kg/sync-monitor.ts` — `mergeTriple()` calls `this.kg.resolveConflict(a, b)`
+**Test:** `tests/integration/playbook-freshness.test.ts` §KGSyncMonitor class-aware DCR
 
 ---
 

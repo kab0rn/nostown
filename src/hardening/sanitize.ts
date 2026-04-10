@@ -19,9 +19,14 @@ export const MAX_LENGTHS = {
  * Prevents shell injection, template escapes, and code execution.
  */
 const DANGEROUS_PATTERNS: RegExp[] = [
-  /\$\{/,           // Template literal injection
+  /\$\{/,           // Template literal injection ${...}
+  /\$\(/,           // Command substitution $(...)
   /`[^`]*`/,        // Backtick execution
-  /;\s*(rm|del|drop|exec|eval)/i,  // Command chaining
+  /;\s*(rm|del|drop|exec|eval)/i,  // Semicolon command chaining
+  /[|]/,            // Pipe operator (| and ||)
+  /&&/,             // AND chain
+  /\x00/,           // Null bytes
+  /[\r\n]/,         // CRLF injection
   /<script/i,       // XSS
   /\.\.\//,         // Path traversal
 ];

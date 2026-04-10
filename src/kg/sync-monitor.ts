@@ -182,12 +182,13 @@ export class KGSyncMonitor {
         return true;
       }
 
-      // Conflict — apply DCR (MEMPALACE.md §DCR rules)
-      const winner = this.resolveConflict(existing, remote);
-      if (winner === remote && winner.valid_from > existing.valid_from) {
-        // Remote wins — update local (invalidate old, insert new)
-        // We can't directly update SQLite rows, so we add the remote as a newer entry
-        // The KG's queryEntity returns the latest valid_from, so adding a newer one wins
+      // Conflict — delegate to KnowledgeGraph.resolveConflict() for class-aware DCR.
+      // Per KNOWLEDGE_GRAPH.md §Consistency: critical triples use role precedence (not MIM);
+      // advisory triples use MIM. BUILDING.md §Correction 6 requires class-aware resolution.
+      const winner = this.kg.resolveConflict(existing, remote);
+      if (winner === remote) {
+        // Remote wins — add it; KG's addTriple auto-invalidates lower-precedence conflicts
+        // for critical relations. For advisory, we just add the richer triple.
         this.kg.addTriple({
           subject: remote.subject,
           relation: remote.relation,
@@ -205,23 +206,5 @@ export class KGSyncMonitor {
     } catch {
       return false;
     }
-  }
-
-  /**
-   * Deterministic Conflict Resolution (DCR) per MEMPALACE.md:
-   * 1. Later valid_from wins
-   * 2. More metadata fields wins (MIM)
-   * 3. Lexicographic object comparison (tiebreaker)
-   */
-  private resolveConflict(a: KGTriple, b: KGTriple): KGTriple {
-    if (a.valid_from > b.valid_from) return a;
-    if (b.valid_from > a.valid_from) return b;
-
-    const metaA = Object.keys(a.metadata ?? {}).length;
-    const metaB = Object.keys(b.metadata ?? {}).length;
-    if (metaA > metaB) return a;
-    if (metaB > metaA) return b;
-
-    return a.object >= b.object ? a : b;
   }
 }
