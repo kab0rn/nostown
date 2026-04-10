@@ -1,8 +1,8 @@
 // NOS Town — Main Entry Point
 
 import { Mayor } from './roles/mayor.js';
-import { SwarmCoordinator } from './swarm/coordinator.js';
 import { HeartbeatMonitor } from './monitor/heartbeat.js';
+import * as readline from 'readline';
 import type { HeartbeatEvent } from './types/index.js';
 
 const AGENT_ID = process.env.NOS_AGENT_ID ?? 'mayor_01';
@@ -12,21 +12,104 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY;
 function checkEnv(): void {
   if (!GROQ_API_KEY) {
     console.error('[NOS Town] ERROR: GROQ_API_KEY environment variable is required');
+    console.error('  Set it in .env or export GROQ_API_KEY=gsk_...');
     process.exit(1);
   }
 }
 
 function heartbeatHandler(event: HeartbeatEvent): void {
-  console.warn(`[Heartbeat] ${event.type}:`, JSON.stringify(event));
+  if (event.type === 'MAYOR_MISSING') {
+    console.warn(`[Heartbeat] ${event.type}:`, JSON.stringify(event));
+  }
+}
+
+async function orchestrateTask(description: string, mayor: Mayor): Promise<void> {
+  console.log(`[NOS Town] Orchestrating: ${description}`);
+  try {
+    const plan = await mayor.orchestrate({ description });
+    console.log(`[NOS Town] Plan: ${plan.plan_id}  (${plan.beads.length} beads)`);
+    for (const bead of plan.beads) {
+      console.log(`  - ${bead.bead_id} (${bead.task_type}, role=${bead.role})`);
+    }
+  } catch (err) {
+    console.error(`[NOS Town] Orchestration failed: ${String(err)}`);
+  }
+}
+
+function showStatus(): void {
+  const palaceUrl = process.env.MEMPALACE_URL ?? 'http://localhost:7474';
+  console.log(`Mayor: ${AGENT_ID}   Rig: ${RIG_NAME}   Palace: ${palaceUrl}`);
+}
+
+function showHelp(): void {
+  console.log(
+    `NOS Town — Groq-native multi-agent orchestration\n` +
+    `\n` +
+    `Usage:\n` +
+    `  nt                  Interactive session\n` +
+    `  nt <task>           Orchestrate any task — plain text, no syntax\n` +
+    `  nt up               Start MemPalace server\n` +
+    `  nt status           Show system status\n` +
+    `\n` +
+    `Examples:\n` +
+    `  nt add rate limiting to the polecat dispatch loop\n` +
+    `  nt fix the convoy signature verification\n` +
+    `  nt what models are in the routing table?`,
+  );
+}
+
+// nextLine wraps rl.question in a promise and resolves null on EOF/close.
+function nextLine(rl: readline.Interface, prompt: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const onClose = (): void => resolve(null);
+    rl.once('close', onClose);
+    rl.question(prompt, (answer) => {
+      rl.removeListener('close', onClose);
+      resolve(answer);
+    });
+  });
+}
+
+async function runRepl(mayor: Mayor): Promise<void> {
+  const palaceUrl = process.env.MEMPALACE_URL ?? 'http://localhost:7474';
+  console.log(`NOS Town  ${AGENT_ID} / ${RIG_NAME}  ${palaceUrl}`);
+  console.log(`Type a task, 'status', or 'exit'.\n`);
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const line = await nextLine(rl, '> ');
+    if (line === null) break; // EOF (Ctrl+D)
+
+    const input = line.trim();
+    if (!input) continue;
+    if (input === 'exit' || input === 'quit') break;
+
+    if (input === 'status') {
+      showStatus();
+    } else if (input === 'help') {
+      showHelp();
+    } else {
+      await orchestrateTask(input, mayor);
+    }
+  }
+
+  rl.close();
+  console.log('');
 }
 
 async function main(): Promise<void> {
+  // The nt binary passes the entire task as a single arg, or --interactive for REPL.
+  // Legacy: 'task <description>' still works for backward compatibility.
+  const raw = process.argv.slice(2);
+  const args = raw[0] === '--' ? raw.slice(1) : raw;
+  const first = args[0];
+
   checkEnv();
-
-  const args = process.argv.slice(2);
-  const command = args[0];
-
-  console.log(`[NOS Town] Starting Mayor ${AGENT_ID} on rig ${RIG_NAME}`);
 
   const mayor = new Mayor({
     agentId: AGENT_ID,
@@ -45,61 +128,36 @@ async function main(): Promise<void> {
   monitor.start();
   mayor.startHeartbeat();
 
-  // Handle CLI commands
-  switch (command) {
-    case 'task': {
-      const taskDescription = args.slice(1).join(' ');
-      if (!taskDescription) {
+  try {
+    if (first === '--interactive' || first === '-i') {
+      // Launched by `nt` (no args) via the nt binary
+      await runRepl(mayor);
+    } else if (first === 'status') {
+      showStatus();
+    } else if (first === 'help' || first === '--help' || first === '-h') {
+      showHelp();
+    } else if (first === 'task') {
+      // Legacy compatibility: `nos task <description>`
+      const description = args.slice(1).join(' ');
+      if (!description) {
         console.error('Usage: nos task <description>');
         process.exit(1);
       }
-
-      console.log(`[NOS Town] Orchestrating task: ${taskDescription}`);
-      try {
-        const plan = await mayor.orchestrate({ description: taskDescription });
-        console.log(`[NOS Town] Plan created: ${plan.plan_id}`);
-        console.log(`[NOS Town] Checkpoint: ${plan.checkpoint_id}`);
-        console.log(`[NOS Town] Beads: ${plan.beads.length}`);
-        for (const bead of plan.beads) {
-          console.log(`  - ${bead.bead_id} (${bead.task_type}, role=${bead.role})`);
-        }
-      } catch (err) {
-        console.error(`[NOS Town] Orchestration failed: ${String(err)}`);
-      }
-      break;
+      await orchestrateTask(description, mayor);
+    } else if (first !== undefined) {
+      // Plain text task — no prefix required
+      await orchestrateTask(args.join(' '), mayor);
+    } else if (process.stdin.isTTY) {
+      // `nos` with no args in a terminal → REPL
+      await runRepl(mayor);
+    } else {
+      showHelp();
     }
-
-    case 'status': {
-      const coordinator = new SwarmCoordinator();
-      console.log(`[NOS Town] Rig: ${RIG_NAME}`);
-      console.log(`[NOS Town] Mayor: ${AGENT_ID}`);
-      console.log(`[NOS Town] Palace: ${process.env.MEMPALACE_URL ?? 'http://localhost:7474'}`);
-      break;
-    }
-
-    default: {
-      console.log(`
-NOS Town — Groq-native multi-agent orchestration
-
-Usage:
-  nos task <description>    Orchestrate a task
-  nos status                Show system status
-
-Environment:
-  GROQ_API_KEY              Groq API key (required)
-  NOS_AGENT_ID              Mayor agent ID (default: mayor_01)
-  NOS_RIG                   Rig name (default: default)
-  MEMPALACE_URL             MemPalace URL (default: http://localhost:7474)
-  NOS_ROLE_KEY_DIR          Key directory (default: keys/)
-  NOS_RIGS_ROOT             Rigs root directory (default: rigs/)
-      `);
-    }
+  } finally {
+    mayor.stopHeartbeat();
+    monitor.stop();
+    mayor.close();
   }
-
-  // Cleanup
-  mayor.stopHeartbeat();
-  monitor.stop();
-  mayor.close();
 }
 
 main().catch((err) => {
