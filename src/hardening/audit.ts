@@ -15,7 +15,8 @@ export type AuditEventType =
   | 'SCAN_COMPLETED'
   | 'KEY_LOADED'
   | 'AUTH_FAILED'
-  | 'AUTHZ_DENIED';
+  | 'AUTHZ_DENIED'
+  | 'MAYOR_ADOPTION';  // Orphan workflow adoption (OBSERVABILITY.md §Audit Logging)
 
 export interface AuditEntry {
   ts: string;

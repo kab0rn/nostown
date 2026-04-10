@@ -113,12 +113,12 @@ export class Historian {
       await this.writeStepProgress(rigName, runDate, 'detect_tunnels', 0);
     }
 
-    // 7. Write diary entry
+    // 7. Write AAAK-compressed diary entry (HISTORIAN.md §Nightly Pipeline step 7)
+    // Per spec: content=nightly_summary_aaak — use AAAK compression for token efficiency
+    // when the Mayor reads this back via diaryRead during palace wakeup.
     try {
-      await this.palace.diaryWrite(
-        'wing_historian',
-        `Nightly run complete for ${rigName}: ${beads.length} beads processed, ${patterns.size} task types found`,
-      );
+      const aaakSummary = this.generateAaakManifest(beads.slice(-200));
+      await this.palace.diaryWrite('wing_historian', aaakSummary);
     } catch (err) {
       console.warn(`[Historian] Diary write failed: ${String(err)}`);
     }

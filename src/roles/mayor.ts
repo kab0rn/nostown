@@ -11,6 +11,7 @@ import { RoutingDispatcher } from '../routing/dispatch.js';
 import type { Bead, ConvoyMessage, InferenceParams, HeartbeatEvent, PlaybookEntry } from '../types/index.js';
 import { Ledger as LedgerClass } from '../ledger/index.js';
 import { DEFAULT_IN_FLIGHT_LIMITS, isRendezvousNode, detectCycles, swarmRebalanceLimits, detectStackFamily, areStacksCompatible } from '../swarm/tools.js';
+import { auditLog } from '../hardening/audit.js';
 import { v4 as uuidv4 } from 'uuid';
 
 export type HeartbeatEmitter = (event: HeartbeatEvent) => void;
@@ -110,6 +111,13 @@ export class Mayor {
             `[Mayor:${this.agentId}] Adopting ${inProgress.length} orphan beads — NOT re-decomposing`,
           );
         }
+        // Audit log the adoption event (OBSERVABILITY.md §Audit Logging — Mayor Adoption Event)
+        auditLog(
+          'MAYOR_ADOPTION',
+          this.agentId,
+          String(checkpoint.id ?? 'unknown'),
+          `Adopted ${inProgress.length} orphan bead(s) from prior checkpoint; replay skipped`,
+        );
         this.lastHeartbeatAt = new Date();
         orphanFound = true;
       }

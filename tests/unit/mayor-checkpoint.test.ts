@@ -367,4 +367,29 @@ describe('Mayor startup recovery (RESILIENCE.md §Mayor Session Recovery)', () =
     const orphanFound = await mayor.startup();
     expect(orphanFound).toBe(false);
   });
+
+  it('writes MAYOR_ADOPTION audit log when orphan workflow adopted (OBSERVABILITY.md)', async () => {
+    // Spy on auditLog via the module object (ts-jest compiles property-access style)
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const auditModule = require('../../src/hardening/audit') as typeof import('../../src/hardening/audit');
+    const auditLogSpy = jest.spyOn(auditModule, 'auditLog');
+
+    searchSpy.mockImplementation((query: string, _wing: string, hall: string) => {
+      if (query === 'active-convoy' && hall === 'hall_facts') {
+        return Promise.resolve({
+          results: [{ id: 'ckpt-adopt-001', content: '{"checkpoint_id":"ckpt-adopt-001"}' }],
+          total: 1,
+        });
+      }
+      return Promise.resolve({ results: [], total: 0 });
+    });
+
+    await mayor.startup();
+
+    const adoptionCall = auditLogSpy.mock.calls.find((args) => args[0] === 'MAYOR_ADOPTION');
+    expect(adoptionCall).toBeDefined();
+    expect(adoptionCall?.[1]).toBe('mayor_ckpt');
+
+    auditLogSpy.mockRestore();
+  });
 });

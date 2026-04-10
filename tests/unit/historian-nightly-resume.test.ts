@@ -154,4 +154,20 @@ describe('Historian nightly run step progress tracking (HARDENING.md)', () => {
     );
     expect(stepMarkerCalls.length).toBeGreaterThan(0);
   });
+
+  it('writes AAAK-compressed diary entry after nightly run (HISTORIAN.md §step 7)', async () => {
+    const diaryWriteSpy = jest.spyOn(MemPalaceClient.prototype, 'diaryWrite').mockResolvedValue({ id: 1 });
+
+    await historian.runNightly('resume-rig');
+
+    // diaryWrite should have been called for wing_historian
+    expect(diaryWriteSpy).toHaveBeenCalled();
+    const [[wing, content]] = diaryWriteSpy.mock.calls as [[string, string]];
+    expect(wing).toBe('wing_historian');
+
+    // Content must be AAAK-compressed (starts with AAAK header, not plain prose)
+    expect(content).toMatch(/# AAAK/);
+    // Must NOT be the plain-text summary from previous implementation
+    expect(content).not.toMatch(/^Nightly run complete for/);
+  });
 });
