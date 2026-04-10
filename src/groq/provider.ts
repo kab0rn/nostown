@@ -12,6 +12,34 @@ export type HeartbeatEmitter = (event: HeartbeatEvent) => void;
 
 const DEFAULT_MAX_RETRIES = 3;
 
+/**
+ * Extract a JSON object or array from model output that may include markdown
+ * code fences or leading prose. Returns the raw string unchanged if no JSON
+ * structure can be isolated (so the caller's JSON.parse will still throw and
+ * trigger a retry).
+ */
+export function extractJson(raw: string): string {
+  const s = raw.trim();
+  // Likely a bare JSON value with no leading/trailing prose
+  if (
+    (s.startsWith('{') && s.endsWith('}')) ||
+    (s.startsWith('[') && s.endsWith(']'))
+  ) {
+    return s;
+  }
+  // Markdown code fence: ```json\n...\n``` or ```\n...\n```
+  const fence = s.match(/```(?:json)?\s*\n([\s\S]*?)\n?```/);
+  if (fence) return fence[1].trim();
+  // Scan for the first { or [ and extract to its matching close bracket
+  const first = s.search(/[{[]/);
+  if (first !== -1) {
+    const close = s[first] === '{' ? '}' : ']';
+    const last = s.lastIndexOf(close);
+    if (last > first) return s.slice(first, last + 1);
+  }
+  return raw;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -228,12 +256,15 @@ export class GroqProvider {
           this.client.chat.completions.create(requestParams),
         );
 
-        const content = response.choices[0]?.message?.content ?? '';
-
-        // JSON parse failure → retry with temp 0
+        const raw = response.choices[0]?.message?.content ?? '';
+        // For json_object requests, strip markdown fences / leading prose before
+        // parsing. Models like groq/compound sometimes wrap JSON in code blocks.
+        let content = raw;
         if (params.response_format?.type === 'json_object') {
+          const extracted = extractJson(raw);
           try {
-            JSON.parse(content);
+            JSON.parse(extracted);
+            content = extracted; // return clean JSON to caller
           } catch {
             console.warn(`[GroqProvider] JSON parse failure on attempt ${attempt + 1}, retrying with temp=0`);
             temperature = 0;

@@ -32,8 +32,12 @@ export function getModelForRole(
   if (forceModel) return forceModel;
 
   // Task-type specific overrides
+  if (taskType === 'decompose') {
+    // groq/compound wraps JSON in markdown fences; use a model with reliable
+    // json_object output for the structured decomposition step.
+    return 'llama-3.3-70b-versatile';
+  }
   if (taskType === 'typescript_generics' || taskType === 'code_review') {
-    // Use a stronger model for complex code tasks
     return ROLE_MODELS[role]?.primary ?? 'llama-3.3-70b-versatile';
   }
 
