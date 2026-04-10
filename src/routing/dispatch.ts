@@ -47,7 +47,7 @@ const TASK_COMPLEXITY: Record<string, 'low' | 'medium' | 'high' | 'critical'> = 
 const COMPLEXITY_MODELS: Record<string, string> = {
   low: 'llama-3.1-8b-instant',
   medium: 'meta-llama/llama-4-scout-17b-16e-instruct',
-  high: 'qwen-qwen3-32b',
+  high: 'qwen/qwen3-32b',
   critical: 'llama-3.3-70b-versatile',
 };
 

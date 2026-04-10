@@ -43,7 +43,7 @@ describe('RoutingDispatcher', () => {
       rigName: 'test-rig',
     });
 
-    expect(decision.model).toBe('qwen-qwen3-32b');
+    expect(decision.model).toBe('qwen/qwen3-32b');
     expect(decision.reason).toMatch(/Complexity routing.*high/);
   });
 

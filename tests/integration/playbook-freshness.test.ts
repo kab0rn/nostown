@@ -75,7 +75,7 @@ describe('KG routing lock → model selection (R-010 §KG-Backed Routing)', () =
       title: 'JWT Auth Golden Path',
       steps: ['Step 1', 'Step 2'],
       task_type: 'security',
-      model_hint: 'qwen-qwen3-32b',
+      model_hint: 'qwen/qwen3-32b',
       success_rate: 0.97,
       sample_size: 85,
     };
@@ -89,7 +89,7 @@ describe('KG routing lock → model selection (R-010 §KG-Backed Routing)', () =
 
     expect(decision.locked).toBe(true);
     expect(decision.playbookUsed).toBe(true);
-    expect(decision.model).toBe('qwen-qwen3-32b');
+    expect(decision.model).toBe('qwen/qwen3-32b');
     expect(decision.reason).toMatch(/Playbook shortcut/);
   });
 

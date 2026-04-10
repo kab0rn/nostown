@@ -1,7 +1,7 @@
 // NOS Town — Refinery Agent (High-Token Reasoning)
 // Per ROLES.md §Refinery and ROUTING.md §Escalation Ladder:
 // Terminal escalation node for architectural decisions and complex root-cause analysis
-// where 17B/32B models lack sufficient depth. Uses compound-beta (high-capability).
+// where 17B/32B models lack sufficient depth. Uses groq/compound (high-capability).
 //
 // Triggered when:
 //   - Witness council rejects with score 0/N (unanimous failure)
@@ -91,9 +91,9 @@ export class Refinery {
 
     // 2. Run high-capability inference
     const params: InferenceParams = {
-      role: 'mayor',   // compound-beta is the mayor model
+      role: 'mayor',   // groq/compound is the mayor model
       task_type: 'refinery_analysis',
-      model: 'compound-beta',
+      model: 'groq/compound',
       messages: [
         {
           role: 'system',

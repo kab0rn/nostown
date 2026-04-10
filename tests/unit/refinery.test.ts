@@ -252,7 +252,7 @@ describe('Refinery.analyze()', () => {
     warnSpy.mockRestore();
   });
 
-  test('uses compound-beta model for inference', async () => {
+  test('uses groq/compound model for inference', async () => {
     mockExecuteInference.mockResolvedValue(GOOD_RESPONSE);
 
     const refinery = makeRefinery();
@@ -260,6 +260,6 @@ describe('Refinery.analyze()', () => {
     refinery.close();
 
     const callArg = mockExecuteInference.mock.calls[0][0] as { model: string };
-    expect(callArg.model).toBe('compound-beta');
+    expect(callArg.model).toBe('groq/compound');
   });
 });

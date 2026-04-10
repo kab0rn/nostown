@@ -6,9 +6,9 @@ export interface ModelConfig {
 }
 
 export const ROLE_MODELS: Record<string, ModelConfig> = {
-  mayor: { primary: 'compound-beta', fallback: 'llama-3.3-70b-versatile' },
+  mayor: { primary: 'groq/compound', fallback: 'llama-3.3-70b-versatile' },
   polecat: { primary: 'meta-llama/llama-4-scout-17b-16e-instruct', fallback: 'llama-3.1-8b-instant' },
-  witness: { primary: 'qwen-qwen3-32b', fallback: 'llama-3.3-70b-versatile' },
+  witness: { primary: 'qwen/qwen3-32b', fallback: 'llama-3.3-70b-versatile' },
   refinery: { primary: 'llama-3.3-70b-versatile', fallback: 'llama-3.3-70b-versatile' },
   safeguard: { primary: 'llama-3.3-70b-versatile', fallback: 'llama-3.1-8b-instant' },
   historian: { primary: 'llama-3.1-8b-instant', fallback: 'llama-3.1-8b-instant' },

@@ -765,9 +765,9 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
   private modelForRole(role: string): string {
     const models: Record<string, string> = {
       polecat: 'meta-llama/llama-4-scout-17b-16e-instruct',
-      witness: 'qwen-qwen3-32b',
+      witness: 'qwen/qwen3-32b',
       safeguard: 'llama-3.3-70b-versatile',
-      mayor: 'compound-beta',
+      mayor: 'groq/compound',
       historian: 'llama-3.1-8b-instant',
     };
     return models[role] ?? 'llama-3.3-70b-versatile';
