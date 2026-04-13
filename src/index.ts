@@ -2,6 +2,7 @@
 
 import { Mayor } from './roles/mayor.js';
 import { HeartbeatMonitor } from './monitor/heartbeat.js';
+import { runFromStdin } from './swarm/bridge.js';
 import * as readline from 'readline';
 import type { HeartbeatEvent } from './types/index.js';
 
@@ -136,6 +137,15 @@ async function main(): Promise<void> {
       showStatus();
     } else if (first === 'help' || first === '--help' || first === '-h') {
       showHelp();
+    } else if (first === 'swarm') {
+      // Multi-agent swarm consensus (GasTown integration)
+      const swarmArgs = args.slice(1);
+      if (swarmArgs.includes('--stdin-params')) {
+        await runFromStdin();
+      } else {
+        console.error('Direct swarm mode not yet implemented. Use --stdin-params.');
+        process.exit(1);
+      }
     } else if (first === 'task') {
       // Legacy compatibility: `nos task <description>`
       const description = args.slice(1).join(' ');
