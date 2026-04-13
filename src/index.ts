@@ -1,6 +1,7 @@
 // NOS Town — Main Entry Point
 
 import { Mayor } from './roles/mayor.js';
+import { WorkerRuntime } from './runtime/worker-loop.js';
 import { HeartbeatMonitor } from './monitor/heartbeat.js';
 import { runFromStdin } from './swarm/bridge.js';
 import * as readline from 'readline';
@@ -127,6 +128,15 @@ async function main(): Promise<void> {
     emitHeartbeat: heartbeatHandler,
   });
 
+  const runtime = new WorkerRuntime({
+    rigName: RIG_NAME,
+    groqApiKey: GROQ_API_KEY,
+    polecatCount: Number(process.env.NOS_POLECAT_COUNT ?? 4),
+    safeguardPoolSize: Number(process.env.SAFEGUARD_POOL_SIZE ?? 2),
+    pollIntervalMs: Number(process.env.NOS_POLL_INTERVAL_MS ?? 500),
+    onEvent: heartbeatHandler,
+  });
+
   const monitor = new HeartbeatMonitor({
     onEvent: heartbeatHandler,
     polecatStallThresholdMs: 10 * 60 * 1000,
@@ -136,6 +146,7 @@ async function main(): Promise<void> {
   monitor.registerMayor(mayor);
   monitor.start();
   mayor.startHeartbeat();
+  await runtime.start();
 
   try {
     if (first === '--interactive' || first === '-i') {
@@ -172,6 +183,7 @@ async function main(): Promise<void> {
       showHelp();
     }
   } finally {
+    await runtime.stop();
     mayor.stopHeartbeat();
     monitor.stop();
     mayor.close();
