@@ -38,9 +38,8 @@ Full architecture docs: `docs/`
 ## Development
 
 ```bash
-npm test              # Run all 572 tests
+npm test              # Run all tests
 npm run typecheck     # TypeScript check
-nt up                 # Start MemPalace
 ```
 
 ## Dolt / beads

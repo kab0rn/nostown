@@ -88,13 +88,10 @@ function getOrLoadRules(ttlMs: number): SecurityRule[] {
 
 /** Cached learned vulnerability patterns (shared across workers in-process, session-local) */
 let learnedPatterns: string[] = [];
-let patternsLoadedAt = 0;
-const PATTERNS_TTL_MS = 60_000; // refresh every 60s
 
 /** Reset the in-process pattern cache — for testing only. */
 export function _resetPatternCacheForTesting(): void {
   learnedPatterns = [];
-  patternsLoadedAt = 0;
 }
 
 export class SafeguardWorker {
