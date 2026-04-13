@@ -1,6 +1,7 @@
 node_modules/
 dist/
 kg/
+palace-db/
 *.db
 *.db-shm
 *.db-wal
