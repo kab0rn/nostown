@@ -41,15 +41,15 @@ export const beadLatencyMs = meter.createHistogram('bead_latency_ms', {
   unit: 'ms',
 });
 
-/** MemPalace semantic search / KG query latency (P95 alert: > 500ms) */
-export const mempalaceRetrievalLatencyMs = meter.createHistogram('mempalace_retrieval_latency', {
-  description: 'MemPalace search or KG query round-trip time in ms',
+/** KG query latency (P95 alert: > 500ms) */
+export const kgRetrievalLatencyMs = meter.createHistogram('kg_retrieval_latency', {
+  description: 'KG query round-trip time in ms',
   unit: 'ms',
 });
 
-/** MemPalace KG write / drawer write latency (P95 alert: > 50ms) */
-export const mempalaceWriteLatencyMs = meter.createHistogram('mempalace_write_latency_ms', {
-  description: 'MemPalace KG write or drawer write time in ms',
+/** KG write latency (P95 alert: > 50ms) */
+export const kgWriteLatencyMs = meter.createHistogram('kg_write_latency_ms', {
+  description: 'KG triple write time in ms',
   unit: 'ms',
 });
 

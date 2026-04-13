@@ -154,10 +154,10 @@ export function verifyConvoy(msg: ConvoyMessage): boolean {
 
 ### 3.2 Replay Attack Prevention
 
-- Each sender maintains a monotonically increasing `seq` counter persisted in its MemPalace `hall_events` room under key `convoy_seq`.
-- Receivers maintain a `last_seen_seq` per sender in memory (reset on restart) and in `hall_events` (durable).
+- Each sender maintains a monotonically increasing `seq` counter persisted in the KG as a `historical` triple under key `convoy_seq`.
+- Receivers maintain a `last_seen_seq` per sender in memory (reset on restart) and in the KG (durable).
 - A convoy with `seq <= last_seen_seq[sender]` is rejected as a replay.
-- Sequence counters are never reset. If a sender restarts, it reads its last `convoy_seq` from `hall_events` before sending.
+- Sequence counters are never reset. If a sender restarts, it reads its last `convoy_seq` from the KG before sending.
 
 ### 3.3 Input Sanitization (Safeguard Integration)
 

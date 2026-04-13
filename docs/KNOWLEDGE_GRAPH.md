@@ -1,6 +1,6 @@
 # NOS Town Knowledge Graph — SQLite Triple Store
 
-The MemPalace Knowledge Graph (KG) is a temporal SQLite triple store embedded in the MemPalace MCP server. It is the authoritative source for model routing state, Witness council votes, architectural decisions, and team assignments across all NOS Town sessions.
+The NOS Town Knowledge Graph (KG) is a temporal SQLite triple store at `palace-db/knowledge_graph.sqlite`. It is the authoritative source for model routing state, Witness council votes, architectural decisions, and team assignments across all NOS Town sessions. No external memory server is required — agents access the KG directly via `src/kg/`.
 
 ---
 
@@ -82,60 +82,62 @@ CREATE INDEX idx_valid_to    ON triples(valid_to);
 
 ---
 
-## MCP Tool Reference
+## KG Tool Reference
 
-### `mempalace_kg_add`
+Agents call the KG via `src/kg/tools.ts`. Source of truth for the programmatic API.
 
-Add a new triple. If a conflicting active triple exists (same subject+relation, `valid_to = NULL`), the existing triple is NOT automatically invalidated — that is the caller's responsibility (use `mempalace_kg_invalidate` first if needed).
+### `kgInsert` / `kg_add`
+
+Add a new triple. If a conflicting active triple exists (same subject+relation, `valid_to = NULL`), the existing triple is NOT automatically invalidated — that is the caller's responsibility (use `kgInvalidate` first if needed).
 
 ```typescript
-// Input
+// Input (KgInsertParams)
 {
   subject:    string;   // e.g. "llama-3.1-8b"
   relation:   string;   // e.g. "locked_to"
   object:     string;   // e.g. "typescript_generics"
-  valid_from: string;   // ISO 8601 date (default: today)
+  agent_id:   string;   // who is writing this triple
+  valid_from?: string;  // ISO 8601 date (default: today)
   metadata?:  object;   // arbitrary JSON
 }
-// Output: { triple_id: number }
 ```
 
-### `mempalace_kg_query`
+### `kgQuery` / `kg_query`
 
 Query all active triples for a subject, optionally as of a historical date.
 
 ```typescript
-// Input
+// Input (KgQueryParams)
 {
-  subject:  string;
-  as_of?:   string;   // ISO 8601 date (default: today)
-  relation?: string;  // optional filter
+  subject:   string;
+  as_of?:    string;   // ISO 8601 date (default: today)
+  relation?: string;   // optional filter
 }
-// Output: Triple[]
-// Triple = { id, subject, relation, object, valid_from, valid_to, metadata }
+// Output: KGTriple[]
+// KGTriple = { id, subject, relation, object, valid_from, valid_to, agent_id, metadata, created_at }
 ```
 
-### `mempalace_kg_timeline`
+### `kgTimeline` / `kg_timeline`
 
-Return the full history of all triples touching a subject or room, ordered by `valid_from` ascending.
+Return the full history of all triples touching a subject, ordered by `valid_from` ascending.
 
 ```typescript
-// Input: { subject: string }
-// Output: Triple[]   -- all time, including expired
+// Input: subject: string
+// Output: KGTriple[]   -- all time, including expired
 ```
 
-### `mempalace_kg_invalidate`
+### `kgInvalidate` / `kg_invalidate`
 
 Set `valid_to` on an active triple, marking it as no longer true. Used for model demotions, ownership transfers, and resolved blocks.
 
 ```typescript
 // Input
 {
-  triple_id:  number;
-  valid_to:   string;   // ISO 8601 date
-  reason?:    string;   // logged to metadata
+  tripleId: number;
+  validTo:  string;   // ISO 8601 date
+  reason?:  string;   // logged to metadata
 }
-// Output: { success: boolean }
+// Output: boolean (success)
 ```
 
 ---
@@ -144,7 +146,7 @@ Set `valid_to` on an active triple, marking it as no longer true. Used for model
 
 ### Node Hierarchy (Single-Instance)
 
-In NOS Town's default single-machine deployment, there is only one MemPalace MCP server instance. All agents write to it directly. The "Primary Historian" concept applies to multi-machine deployments:
+In NOS Town's default single-machine deployment, all agents write to the SQLite KG directly via `src/kg/`. The "Primary Historian" concept applies to multi-machine deployments:
 
 - **Primary Historian node:** The machine running the nightly Historian batch job has authoritative write access to KG routing triples and model demotions.
 - **Relay agents (Polecats, Witnesses):** Write council votes and discovery triples directly without going through the Historian.
@@ -159,7 +161,7 @@ Each triple MUST declare a semantic class in metadata:
 
 ### Eventual Consistency Rules
 
-1. **Timestamping:** Every triple write includes a `created_at` timestamp with millisecond precision. In case of network partition between two MemPalace instances (multi-machine setup), `created_at` is used to order writes on merge.
+1. **Timestamping:** Every triple write includes a `created_at` timestamp with millisecond precision. In case of network partition between two KG instances (multi-machine setup), `created_at` is used to order writes on merge.
 
 2. **Conflict resolution is class-aware:**
    - For `critical` triples:
@@ -173,11 +175,11 @@ Each triple MUST declare a semantic class in metadata:
 
 Metadata field count MUST NOT determine the winner for `critical` triples.
 
-3. **Sync Heartbeat:** Every 500ms, the MemPalace server computes:
+3. **Sync Heartbeat:** Every 500ms, the KG sync monitor computes:
    ```
    hash = SHA-256(last_100_triple_ids + their_created_at values)
    ```
-   This hash is exposed via `mempalace_status`. Agents compare their cached hash against this to detect if the KG has changed since their last read. If the hash differs, they must re-query before acting.
+   This hash is exposed via `KGSyncMonitor`. Agents compare their cached hash against this to detect if the KG has changed since their last read. If the hash differs, they must re-query before acting.
 
 ### Conflict Resolution Examples
 
@@ -249,7 +251,7 @@ Guardrails:
 - **Triples never deleted:** Once written, triples are permanent (append-only). Invalidation sets `valid_to` but does not delete the row. This provides a complete audit trail.
 - **PII filter:** The Historian's nightly pipeline runs a PII-stripping pass before writing any code-content or description fields to the KG. Only task types, model IDs, and room names are stored — never raw code or credential patterns.
 - **Cross-rig isolation:** Triples for different Rig wings are namespaced by rig prefix in `subject`/`object`. A query for `rig_tcgliveassist` does not return results for `rig_openclaw` unless a Tunnel explicitly links them.
-- **SQLite file location:** `palace-db/knowledge_graph.sqlite`. Back this up before any MemPalace version upgrades.
+- **SQLite file location:** `palace-db/knowledge_graph.sqlite`. Back this up before schema migrations.
 
 ---
 
@@ -268,7 +270,6 @@ Once 100+ Beads have been processed by the Historian, the bootstrap triples are 
 
 ## See Also
 
-- [MEMPALACE.md](./MEMPALACE.md) — Full palace hierarchy, MCP tool list, ChromaDB integration
 - [HISTORIAN.md](./HISTORIAN.md) — How and when the Historian writes routing triples
 - [ROUTING.md](./ROUTING.md) — Static routing table (bootstrap only once KG is populated)
 - [HARDENING.md](./HARDENING.md) — MIM conflict resolution requirements and consistency checklist

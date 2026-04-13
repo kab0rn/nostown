@@ -14,8 +14,8 @@ NOS Town agents and infrastructure components export metrics via OpenTelemetry (
 | `bead_latency_ms` | Histogram | Time from assignment to resolution | > 60s (P95) |
 | `polecat_stall_rate` | Gauge | % of Polecats in stalled state | > 10% |
 | `witness_approval_rate` | Gauge | % of PRs approved by Witness council | < 70% |
-| `mempalace_retrieval_latency` | Histogram | Time for semantic search/KG query | > 500ms |
-| `mempalace_write_latency_ms` | Histogram | Time for KG write / drawer write | > 50ms (P95) |
+| `kg_retrieval_latency` | Histogram | Time for KG query | > 500ms |
+| `kg_write_latency_ms` | Histogram | Time for KG triple write | > 50ms (P95) |
 | `groq_api_error_rate` | Counter | 429/5xx errors from Groq API | > 5% |
 | `convoy_delivery_failure` | Counter | Messages failing signature/seq check | > 0 (Immediate) |
 | `convoy_authz_denied_total` | Counter | Signed messages rejected by sender/type authorization | > 0 (Immediate) |
@@ -31,9 +31,9 @@ NOS Town agents and infrastructure components export metrics via OpenTelemetry (
 - **Row 1: Throughput & Latency** (Bead completion rate vs. target)
 - **Row 2: Agent Status** (Count of Idle vs. Busy vs. Stalled Polecats)
 - **Row 3: Quality Control** (Witness approval trend, Safeguard lockdown count)
-- **Row 4: Infrastructure** (Groq API health, MemPalace memory usage)
+- **Row 4: Infrastructure** (Groq API health, KG SQLite size)
 - **Row 5: Control Plane** (Mayor heartbeat gap, orphan workflows, convoy authz failures)
-- **Row 6: Write Path** (MemPalace write latency, Safeguard queue depth, ledger lock wait)
+- **Row 6: Write Path** (KG write latency, Safeguard queue depth, ledger lock wait)
 
 ---
 
@@ -85,9 +85,9 @@ All agents MUST log in JSON format to `stdout`, which is then captured by the NO
 }
 ```
 
-### Audit Logging (MemPalace `hall_events`)
+### Audit Logging (KG `historical` triples + audit dir)
 
-Sensitive operations MUST be recorded as permanent audit logs in MemPalace:
+Sensitive operations MUST be recorded as permanent audit logs — either as KG `historical` triples (for queryable events) or as append-only JSON files in `nos/audit/`:
 
 - **Safeguard LOCKDOWN**: Pattern found, context, and duration
 - **Witness Council Vote**: Individual judge scores and reasoning
@@ -106,13 +106,13 @@ Sensitive operations MUST be recorded as permanent audit logs in MemPalace:
 - **Latency**: 95th percentile bead resolution time (Target: < 90s)
 - **Integrity**: % of convoys passing signature/seq validation (Target: 100%)
 - **Control-plane continuity**: % of active workflows with a live Mayor owner (Target: 100%)
-- **Write-path health**: % of MemPalace + ledger writes under latency budget (Target: 99%)
+- **Write-path health**: % of KG + ledger writes under latency budget (Target: 99%)
 
 ### Alerting Tiers
 
 1. **P0 (Critical)**: `PROVIDER_EXHAUSTED`, `CONVOY_SIGNATURE_FAILURE`, `CONVOY_AUTHZ_DENIED`, `LOCKDOWN_TRIGGERED`, `ORPHAN_WORKFLOW_COUNT > 0`
-2. **P1 (High)**: `POLECAT_STALL_RATE > 15%`, `BEAD_LATENCY > 300s`, `MEMPALACE_WRITE_LATENCY_MS P95 > 200`, `SAFEGUARD_QUEUE_DEPTH > 50`
-3. **P2 (Warning)**: `GROQ_API_429_RATE > 10%`, `MEMPALACE_LATENCY > 1s`, `LEDGER_LOCK_WAIT_MS P95 > 25`, `CRITICAL_BEAD_STARVATION_COUNT > 0`
+2. **P1 (High)**: `POLECAT_STALL_RATE > 15%`, `BEAD_LATENCY > 300s`, `KG_WRITE_LATENCY_MS P95 > 200`, `SAFEGUARD_QUEUE_DEPTH > 50`
+3. **P2 (Warning)**: `GROQ_API_429_RATE > 10%`, `KG_RETRIEVAL_LATENCY > 1s`, `LEDGER_LOCK_WAIT_MS P95 > 25`, `CRITICAL_BEAD_STARVATION_COUNT > 0`
 
 ---
 
