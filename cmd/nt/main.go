@@ -46,6 +46,26 @@ func main() {
 			arg = "historian " + strings.Join(args[1:], " ")
 		}
 		launchNode(nosHome, arg)
+	case "bootstrap":
+		// Seed KG from static routing table: nt bootstrap [--routing-table <path>]
+		nosHome := mustFindNosHome()
+		routingTable := filepath.Join(nosHome, "docs", "ROUTING.md")
+		if len(args) > 2 && args[1] == "--routing-table" {
+			routingTable = args[2]
+		}
+		bootstrapScript := filepath.Join(nosHome, "src", "historian", "bootstrap-kg.ts")
+		cmd := exec.Command("npx", "tsx", bootstrapScript, "--routing-table", routingTable)
+		cmd.Dir = nosHome
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Env = buildEnv(nosHome)
+		if err := cmd.Run(); err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				os.Exit(exitErr.ExitCode())
+			}
+			os.Exit(1)
+		}
 	case "help", "--help", "-h":
 		printHelp()
 	case "version", "--version", "-v":
@@ -243,6 +263,7 @@ Usage:
   nt status               Show service health
   nt prime                Print session context
   nt historian [rig]      Run the Historian nightly pipeline once
+  nt bootstrap            Seed KG from static routing table (first-run)
 
 Examples:
   nt add rate limiting to the polecat dispatch loop
@@ -250,6 +271,7 @@ Examples:
   nt refactor the KG query cache to use LRU eviction
   nt what models are in the routing table?
   nt historian            Mine playbooks and update KG routing
+  nt bootstrap            First-run KG seed (idempotent)
 
 Environment:
   GROQ_API_KEY            Required — Groq Cloud API key
