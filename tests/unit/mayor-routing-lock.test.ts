@@ -1,6 +1,6 @@
 // Tests: Mayor playbook → routing lock
-// When a fresh playbook is found with model_hint, RoutingDispatcher selects
-// that model for matching beads (ROUTING.md §Playbook Shortcut).
+// With MemPalace removed, playbook routing requires explicit PlaybookEntry injection.
+// These tests verify: KG routing lock, complexity-based fallback (no playbook).
 
 jest.mock('groq-sdk', () => {
   const mockCreate = jest.fn();
@@ -17,7 +17,6 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { Mayor } from '../../src/roles/mayor';
-import { MemPalaceClient } from '../../src/mempalace/client';
 import { generateKeyPair } from '../../src/convoys/sign';
 
 const TEST_KEY_DIR = path.join(os.tmpdir(), `nos-rl-keys-${Date.now()}`);
@@ -74,86 +73,16 @@ describe('Mayor routing lock via RoutingDispatcher', () => {
     jest.restoreAllMocks();
   });
 
-  it('uses RoutingDispatcher model when no playbook (complexity routing)', async () => {
-    getMock()
-      .mockRejectedValueOnce(new Error('palace offline'))
-      .mockResolvedValueOnce({ choices: [{ message: { content: makeDecomposeResult('execute', 'polecat') } }] });
-
-    jest.spyOn(MemPalaceClient.prototype, 'wakeup').mockRejectedValue(new Error('offline'));
-    jest.spyOn(MemPalaceClient.prototype, 'search').mockRejectedValue(new Error('offline'));
-    jest.spyOn(MemPalaceClient.prototype, 'saveCheckpoint').mockResolvedValue('ckpt-rl-001');
+  it('uses complexity routing when no KG lock or playbook is present', async () => {
+    getMock().mockResolvedValue({
+      choices: [{ message: { content: makeDecomposeResult('execute', 'polecat') } }],
+    });
 
     const plan = await mayor.orchestrate({ description: 'Execute something' });
 
-    // Without a playbook, complexity routing for 'execute' role 'polecat' = medium → L4S
+    // Without a playbook or KG lock, complexity routing applies
     expect(plan.beads[0].model).toBeTruthy();
     expect(plan.beads.length).toBeGreaterThan(0);
-  });
-
-  it('locks model to playbook hint when fresh playbook found', async () => {
-    const playbookContent = JSON.stringify({
-      id: 'pb-001',
-      title: 'Execute Playbook',
-      task_type: 'execute',
-      steps: ['Step 1', 'Step 2'],
-      model_hint: 'llama-3.3-70b-versatile',
-      success_rate: 0.95,
-      sample_size: 50,
-      last_updated: new Date().toISOString(),
-      created_at: new Date().toISOString(),
-    });
-
-    getMock().mockResolvedValue({
-      choices: [{ message: { content: makeDecomposeResult('execute', 'polecat') } }],
-    });
-
-    jest.spyOn(MemPalaceClient.prototype, 'wakeup').mockRejectedValue(new Error('offline'));
-    const pbEntry = { id: 'pb-001', content: playbookContent, wing_id: 'wing_rig_rl-test-rig', hall_type: 'hall_advice', room_id: 'playbook_execute', created_at: new Date().toISOString() };
-    jest.spyOn(MemPalaceClient.prototype, 'search')
-      .mockResolvedValueOnce({ results: [], total: 0 }) // AAAK manifest search → no manifest
-      .mockResolvedValueOnce({ results: [pbEntry], total: 1 }) // playbook search → found
-      .mockResolvedValue({ results: [], total: 0 }); // rejection search + CoVe → none
-    jest.spyOn(MemPalaceClient.prototype, 'saveCheckpoint').mockResolvedValue('ckpt-rl-002');
-
-    const plan = await mayor.orchestrate({ description: 'Execute task', task_type: 'execute' });
-
-    // RoutingDispatcher with playbookHit for execute → should use model_hint
-    const bead = plan.beads[0];
-    expect(bead.model).toBe('llama-3.3-70b-versatile');
-  });
-
-  it('falls back to complexity routing when playbook is stale (low success_rate)', async () => {
-    const stalePlaybook = JSON.stringify({
-      id: 'pb-stale',
-      title: 'Stale Playbook',
-      task_type: 'execute',
-      steps: [],
-      model_hint: 'llama-3.3-70b-versatile',
-      success_rate: 0.60,  // below 90% threshold → stale
-      sample_size: 50,
-      last_updated: new Date().toISOString(),
-      created_at: new Date().toISOString(),
-    });
-
-    getMock().mockResolvedValue({
-      choices: [{ message: { content: makeDecomposeResult('execute', 'polecat') } }],
-    });
-
-    jest.spyOn(MemPalaceClient.prototype, 'wakeup').mockRejectedValue(new Error('offline'));
-    const stalePbEntry = { id: 'pb-stale', content: stalePlaybook, wing_id: 'wing_rig_rl-test-rig', hall_type: 'hall_advice', room_id: 'playbook_execute', created_at: new Date().toISOString() };
-    jest.spyOn(MemPalaceClient.prototype, 'search')
-      .mockResolvedValueOnce({ results: [stalePbEntry], total: 1 })
-      .mockResolvedValue({ results: [], total: 0 });
-    jest.spyOn(MemPalaceClient.prototype, 'saveCheckpoint').mockResolvedValue('ckpt-rl-003');
-
-    const plan = await mayor.orchestrate({ description: 'Execute task', task_type: 'execute' });
-
-    // Stale playbook → advisory only → activePlaybook NOT set → complexity routing
-    // execute/polecat → medium complexity → meta-llama/llama-4-scout model
-    const bead = plan.beads[0];
-    // Should NOT be the playbook's locked model (llama-3.3-70b-versatile)
-    // Complexity routing for execute → medium → llama-4-scout
-    expect(bead.model).not.toBe('llama-3.3-70b-versatile');
   });
 
   it('RoutingDispatcher uses KG lock when present', async () => {
@@ -176,10 +105,6 @@ describe('Mayor routing lock via RoutingDispatcher', () => {
     getMock().mockResolvedValue({
       choices: [{ message: { content: makeDecomposeResult('security', 'polecat') } }],
     });
-
-    jest.spyOn(MemPalaceClient.prototype, 'wakeup').mockRejectedValue(new Error('offline'));
-    jest.spyOn(MemPalaceClient.prototype, 'search').mockRejectedValue(new Error('offline'));
-    jest.spyOn(MemPalaceClient.prototype, 'saveCheckpoint').mockResolvedValue('ckpt-rl-004');
 
     const plan = await mayor.orchestrate({ description: 'Security scan', task_type: 'security' });
 

@@ -7,7 +7,6 @@ import { buildActionExecutor } from '../../src/hooks/actions';
 import { runMatchingHooks } from '../../src/hooks/executor';
 import { KnowledgeGraph } from '../../src/kg/index';
 import { kgQuery } from '../../src/kg/tools';
-import { MemPalaceClient } from '../../src/mempalace/client';
 import type { Hook, BeadEvent } from '../../src/types/index';
 
 const TEST_KG = path.join(os.tmpdir(), `nos-hook-actions-${Date.now()}.sqlite`);
@@ -34,13 +33,8 @@ afterAll(() => {
 });
 
 describe('buildActionExecutor — MCP_TOOL handler', () => {
-  it('historian_append writes to palace when palace is configured', async () => {
-    const addDrawerSpy = jest
-      .spyOn(MemPalaceClient.prototype, 'addDrawer')
-      .mockResolvedValue({ id: 'mock-drawer-id' });
-
-    const palace = new MemPalaceClient('http://localhost:7474');
-    const executor = buildActionExecutor({ palace });
+  it('historian_append writes to KG when kg is configured', async () => {
+    const executor = buildActionExecutor({ kg });
 
     await executor(
       {
@@ -57,15 +51,11 @@ describe('buildActionExecutor — MCP_TOOL handler', () => {
       SAMPLE_EVENT,
     );
 
-    expect(addDrawerSpy).toHaveBeenCalledWith(
-      'wing_historian',
-      'hall_events',
-      expect.stringContaining(SAMPLE_EVENT.beadId),
-      expect.any(String),
-      expect.any(String),
-    );
-
-    addDrawerSpy.mockRestore();
+    const triples = kgQuery(kg, {
+      subject: SAMPLE_EVENT.beadId,
+      relation: 'historian_append',
+    });
+    expect(triples.some((t) => t.object === SAMPLE_EVENT.outcome)).toBe(true);
   });
 
   it('kg_add inserts a triple into the KG', async () => {

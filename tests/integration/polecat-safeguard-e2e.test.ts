@@ -16,17 +16,6 @@ import type { Bead } from '../../src/types/index';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-jest.mock('../../src/mempalace/client', () => ({
-  MemPalaceClient: jest.fn().mockImplementation(() => ({
-    wakeup: jest.fn().mockResolvedValue({ l0: '', l1: '' }),
-    search: jest.fn().mockResolvedValue({ results: [] }),
-    saveCheckpoint: jest.fn().mockResolvedValue('ckpt-sg-001'),
-    addDrawer: jest.fn().mockResolvedValue({ id: 'drawer_sg' }),
-    diaryRead: jest.fn().mockResolvedValue([]),
-    diaryWrite: jest.fn().mockResolvedValue(undefined),
-  })),
-}));
-
 jest.mock('groq-sdk', () => {
   const mockCreate = jest.fn();
   (globalThis as Record<string, unknown>).__sgE2eMock = mockCreate;

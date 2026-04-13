@@ -41,25 +41,12 @@ const ROLE_TOKEN_LIMITS: Record<string, number> = {
 
 ### 1.2 State Checkpointing
 
-Every agent role MUST checkpoint its state to MemPalace before any operation that could be interrupted:
+Agent state is tracked via the Ledger (JSONL) and Knowledge Graph. Roles write bead status updates as they progress through execution.
 
-- **Polecat:** Write `STATUS: IN_PROGRESS` with current Bead ID and step to `hall_events` before starting file modifications. On completion, update to `STATUS: DONE`.
-- **Witness:** Write council vote progress (partial votes) to `hall_events` before submitting the final verdict.
-- **Mayor:** Write Convoy plan JSON to `hall_facts` before dispatching Polecats. If session restarts, Mayor reads this to avoid re-decomposing already-dispatched work.
-- **Historian:** Write nightly pipeline progress (which steps completed) to `wing_historian / hall_events` so interrupted runs can resume from the last completed step.
-
-```typescript
-// Required checkpoint shape written to hall_events:
-interface AgentCheckpoint {
-  agent_id: string; // e.g. "polecat-7f3b"
-  role: string;
-  bead_id: string;
-  step: string; // e.g. "modifying_file", "writing_tests"
-  status: 'in_progress' | 'done' | 'blocked' | 'failed';
-  timestamp: string; // ISO 8601
-  context_ref?: string; // MemPalace drawer ID if relevant context saved
-}
-```
+- **Polecat:** Bead status transitions (`in_progress` → `done` / `failed`) are written to the Ledger.
+- **Witness:** KG vote triples written per judge; council verdict written at the end.
+- **Mayor:** Generates a session-local `plan_checkpoint_id` (`ckpt_<uuid>`) before dispatching. If session restarts, Mayor reads the Ledger for orphan beads.
+- **Historian:** Nightly pipeline runs to completion; interrupted runs restart from the beginning on next invocation.
 
 ### 1.2.1 Mayor Dispatch Invariant
 
@@ -67,12 +54,11 @@ Mayor checkpointing is a hard invariant, not a best-effort behavior.
 
 Required flow:
 
-1. Mayor writes the full Convoy plan to `wing_mayor / hall_facts / room: active-convoy`
-2. MemPalace returns a durable `plan_checkpoint_id`
-3. Mayor includes `plan_checkpoint_id` on every `BEAD_DISPATCH`
-4. `src/convoys/bus.ts` verifies the checkpoint exists before emitting the first convoy
+1. Mayor generates a session-local `plan_checkpoint_id = ckpt_<uuid>` before decomposing any task
+2. Mayor includes `plan_checkpoint_id` on every `BEAD_DISPATCH`
+3. `src/convoys/bus.ts` verifies the checkpoint field is present before writing the convoy
 
-If checkpoint verification fails, dispatch is aborted with `MAYOR_CHECKPOINT_MISSING`.
+If checkpoint is missing, dispatch is aborted with `MAYOR_CHECKPOINT_MISSING`.
 
 ### 1.3 Heartbeat Monitoring
 
@@ -116,14 +102,12 @@ Ledger writes are partitioned per rig to avoid global mutex contention:
 - each segment stores `{segment_id, bead_count, segment_checksum}`
 - Historian reconciliation reads segment manifests first, then only scans segments requiring validation
 
-### 2.2 MemPalace Consistency
+### 2.2 KG Consistency
 
-The MemPalace KG (SQLite) and ChromaDB vector store are eventually consistent. Rules:
+The Knowledge Graph (SQLite) uses class-aware conflict resolution. Rules:
 
-- **Write-through:** When a Polecat writes a Drawer, it writes to MemPalace first, then appends to `beads.jsonl`. Not the reverse. This ensures MemPalace is never behind the ledger.
-- **Historian reconciliation:** During the nightly run, the Historian compares `beads.jsonl` entries against MemPalace Drawers by `bead_id`. Any ledger entry without a corresponding Drawer is re-inserted (backfill mode).
+- **Ledger-primary:** All bead state is authoritative in the Ledger. The KG stores derived routing decisions and audit history, not bead status.
 - **KG conflict resolution — class-aware precedence:** Critical triples and advisory triples use different conflict rules (see [KNOWLEDGE_GRAPH.md](./KNOWLEDGE_GRAPH.md)).
-- **State hash exchange:** Every 500ms, the MemPalace MCP server computes a rolling SHA-256 hash of the last 100 KG writes and exposes it via `mempalace_status`. Agents can detect divergence by comparing their local last-known hash against the server hash.
 
 ### 2.3 Convoy Sequencing
 
@@ -209,17 +193,16 @@ Safeguard is a pooled service, not a singleton.
 Requirements:
 
 - Minimum pool size: 2 in development, 4 in staging/production
-- Shared read-through cache of known vulnerability patterns
-- Per-worker in-memory diary cache refreshed every 60 seconds
+- Shared in-process cache of vulnerability patterns discovered during the session
 - Queue depth and scan latency exported as metrics
 - Worker loss MUST degrade throughput, not halt the file-write path
 
-### 4.2 Vulnerability Memory (Palace Wing)
+### 4.2 Vulnerability Pattern Cache
 
-The Safeguard maintains a dedicated MemPalace Wing (`wing_safeguard`) containing:
-- **Known Vulnerabilities**: Patterns identified in previous sessions that led to failures.
-- **Trusted Patches**: Examples of secure fixes for common issues.
-- **Violation History**: A per-role score of security violations to detect "drifting" agents.
+The Safeguard maintains an in-process cache of vulnerability patterns discovered during the current session. This cache:
+- Is shared across all workers in the pool via a module-level variable
+- Persists for the lifetime of the process (session-local only)
+- Is not carried across process restarts
 
 ### 4.3 Safeguard Ruleset (JSONL)
 
@@ -245,21 +228,17 @@ Before NOS Town v1.0 ships, all of the following MUST have passing tests:
 | 6 | Replay attack rejected by seq validation | `tests/unit/convoy-replay.test.ts` | ✅ DONE |
 | 7 | Stalled Polecat triggers POLECAT_STALLED event | `tests/integration/heartbeat-stall.test.ts` | ✅ DONE |
 | 8 | Mayor checkpoints plan before dispatch | `tests/unit/mayor-checkpoint.test.ts` | ✅ DONE |
-| 9 | MemPalace backfill catches missing Drawers | `tests/integration/historian-backfill.test.ts` | ✅ DONE |
-| 10 | KG MIM resolves conflicts correctly | `tests/unit/kg-mim.test.ts` | ✅ DONE |
+| 9 | KG MIM resolves conflicts correctly | `tests/unit/kg-mim.test.ts` | ✅ DONE |
 | 11 | Mayor dispatch blocked without checkpoint | `tests/unit/mayor-dispatch-guard.test.ts` | ✅ DONE |
 | 12 | Forged sender with valid HMAC but wrong key is rejected | `tests/unit/convoy-authn.test.ts` | ✅ DONE |
 | 13 | Safeguard pool continues after worker loss | `tests/integration/safeguard-pool-failover.test.ts` | ✅ DONE |
 | 14 | Per-rig ledger partitions avoid cross-rig lock contention | `tests/integration/ledger-partitioning.test.ts` | ✅ DONE |
 | 15 | Critical KG conflicts use role precedence, not MIM | `tests/unit/kg-critical-conflict.test.ts` | ✅ DONE |
-| 16 | KGSyncMonitor reconciliation delegates to class-aware KG.resolveConflict() | `tests/integration/playbook-freshness.test.ts` | ✅ DONE |
-| 17 | MemPalace write queue serializes concurrent writes without corruption | `tests/integration/mempalace-write-contention.test.ts` | ✅ DONE |
-| 18 | Mayor orphan adoption is idempotent — no duplicate beads created | `tests/integration/mayor-adoption.test.ts` | ✅ DONE |
-| 19 | MAYOR_ADOPTION audit event emitted on orphan workflow adoption | `tests/integration/mayor-adoption.test.ts` | ✅ DONE |
-| 20 | Priority-aware draining: critical-path beads drain before low-priority | `tests/integration/swarm-priority.test.ts` | ✅ DONE |
+| 16 | KG class-aware DCR resolves conflicts correctly | `tests/integration/playbook-freshness.test.ts` | ✅ DONE |
+| 17 | Priority-aware draining: critical-path beads drain before low-priority | `tests/integration/swarm-priority.test.ts` | ✅ DONE |
 | 21 | Cross-rig tunnel safety guard blocks incompatible stacks | `tests/integration/tunnel-safety.test.ts` | ✅ DONE |
 | 22 | Hook injection: allow-list + sanitizer blocks end-to-end | `tests/security/hook-injection.test.ts` | ✅ DONE |
-| 23 | Historian diary entry written as AAAK-compressed manifest (not plain text) | `tests/unit/historian-nightly-resume.test.ts` | ✅ DONE |
+| 21 | Historian AAAK manifest written as KG triple | `tests/unit/historian-aaak.test.ts` | ✅ DONE |
 
 ---
 
@@ -280,16 +259,16 @@ Hooks support template variables via `{{variable}}` syntax. To prevent injection
 
 ---
 
-## Pillar 6: KGSyncMonitor Class-Aware Conflict Resolution
+## Pillar 6: KG Class-Aware Conflict Resolution
 
-`KGSyncMonitor.mergeTriple()` MUST delegate conflict resolution to `KnowledgeGraph.resolveConflict()` — which is class-aware — rather than applying MIM unconditionally.
+`KnowledgeGraph.resolveConflict()` MUST be class-aware — it cannot apply MIM unconditionally.
 
 - `critical` triples → role precedence (historian > mayor > witness > safeguard > polecat)
 - `advisory` triples → Most Informative Merge (MIM)
 - `historical` triples → append-only (no merge)
 
-**Implementation:** `src/kg/sync-monitor.ts` — `mergeTriple()` calls `this.kg.resolveConflict(a, b)`
-**Test:** `tests/integration/playbook-freshness.test.ts` §KGSyncMonitor class-aware DCR
+**Implementation:** `src/kg/index.ts` — `resolveConflict()` dispatches by `metadata.class`
+**Test:** `tests/integration/playbook-freshness.test.ts` §KG class-aware DCR
 
 ---
 

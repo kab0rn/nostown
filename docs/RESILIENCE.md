@@ -25,7 +25,6 @@ Request sent to Primary Model (e.g. llama-4-scout-17b)
   │     └── On second 5xx → hot-swap to Stable Fallback immediately
   │
   ├── model_not_found (preview model deprecated)
-  │     ├── Log deprecation event to hall_events
   │     ├── Hot-swap to Stable Fallback permanently for this session
   │     └── Emit MODEL_DEPRECATED event → Historian writes KG demotion triple
   │
@@ -61,58 +60,43 @@ Each role has a defined fallback chain. Hot-swap is instantaneous — no agent r
 
 When the provider emits `PROVIDER_EXHAUSTED` or Groq returns 5xx for > 60 seconds:
 
-1. **Mayor pauses dispatch:** No new Polecats are spawned. Pending Beads remain in the Convoy queue in `hall_events` with `status: QUEUED`.
+1. **Mayor pauses dispatch:** No new Polecats are spawned. Pending Beads are held in the Mayor's in-memory outage queue.
 2. **In-flight Polecats are not killed:** They continue using their current fallback model until completion or natural timeout.
-3. **Queue persistence:** The Convoy queue is written to MemPalace `wing_mayor / hall_events / room: outage-queue` so it survives a Mayor session restart.
+3. **Queue persistence:** The outage queue is in-memory only. It does not survive a Mayor process restart. Surviving in-progress beads are recovered from the Ledger on next startup.
 4. **Recovery signal:** The heartbeat monitor (`src/monitor/heartbeat.ts`) polls the Groq health endpoint every 30 seconds during outage. On recovery (200 response), it emits `PROVIDER_RECOVERED` to the Mayor mailbox.
 5. **Resume dispatch:** Mayor drains the outage queue in FIFO order, re-dispatching Beads with fresh Polecats.
 
-```typescript
-// Outage queue entry shape (stored in hall_events):
-interface QueuedBead {
-  bead_id: string;
-  convoy_id: string;
-  queued_at: string;    // ISO 8601
-  priority: 'high' | 'normal' | 'low';
-  retry_count: number;
-  last_error: string;
-}
-```
-
 ---
 
-## State Checkpointing
-
-All role state is checkpointed to MemPalace so sessions can recover after crashes or restarts.
+## State Recovery
 
 ### Mayor Session Recovery
 
-On startup, Mayor MUST:
+On startup, Mayor reads the Ledger directly for any in-progress or pending beads:
 
-1. Call `mempalace_diary_read --wing wing_mayor` to load prior session summary.
-2. Query `hall_facts / room: active-convoy` for any in-progress Convoy plan.
-3. Query `hall_events / room: outage-queue` for any queued Beads from a prior outage.
-4. Resume dispatching from the recovered state — do NOT re-decompose goals that are already in the ledger.
+1. Read `rigs/<rig>/beads/current.jsonl` for beads with `status: in_progress` or `status: pending`.
+2. If any found: log adoption event, emit `MAYOR_ADOPTION` audit entry.
+3. Resume dispatching from the recovered state — do NOT re-decompose goals that are already in the ledger.
+
+The local checkpoint (`ckpt_<uuid>`) is session-scoped. A replacement Mayor generates a new checkpoint and adopts orphan beads from the Ledger.
 
 ### Mayor Crash Detection
 
 The heartbeat monitor emits `MAYOR_MISSING` when all of the following are true:
 
 - no Mayor heartbeat for 2x the configured heartbeat interval
-- an active convoy checkpoint exists
-- unfinished beads remain queued or in progress
+- unfinished beads remain in the Ledger
 
 ### Mayor Replacement Flow
 
 1. Freeze new dispatch
-2. Snapshot queue + `active-convoy` checkpoint
-3. Start replacement Mayor
-4. Replay outstanding mailbox messages idempotently
-5. Adopt orphan beads
-6. Reconcile dependency graph against ledger and checkpoints
-7. Resume dispatch only after reconciliation succeeds
+2. Start replacement Mayor
+3. Read Ledger for orphan beads
+4. Adopt orphan beads
+5. Reconcile dependency graph against ledger
+6. Resume dispatch only after reconciliation succeeds
 
-A replacement Mayor MUST NOT re-decompose a goal that already has an active convoy checkpoint unless the workflow is explicitly aborted.
+A replacement Mayor MUST NOT re-decompose a goal that already has in-progress beads in the Ledger.
 
 ### Polecat Crash Recovery
 
@@ -120,16 +104,12 @@ If a Polecat crashes mid-task (process killed, context blown, timeout):
 
 1. Heartbeat detects the missing `IN_PROGRESS` update after 10 minutes.
 2. Mayor receives `POLECAT_STALLED` and checks the Bead's `retry_count` in the queue.
-3. If `retry_count < 3`: re-dispatch the same Bead to a new Polecat with the prior Polecat's `hall_discoveries` as additional context.
+3. If `retry_count < 3`: re-dispatch the same Bead to a new Polecat.
 4. If `retry_count >= 3`: Bead is marked `BLOCKED` and human escalation is triggered.
 
 ### Witness Council Recovery
 
-If a Witness council vote is interrupted mid-consensus:
-
-1. Lead Witness reads `wing_witness / hall_events / room: {pr_id}-vote` for partial votes.
-2. Re-runs only the missing votes (not the full 3-judge panel).
-3. If the partial vote is older than 24 hours, the entire council re-runs (stale context).
+If a Witness council vote is interrupted mid-consensus, the council re-runs from the beginning on the next attempt. Partial vote state is not persisted between sessions.
 
 ---
 
@@ -156,7 +136,7 @@ type HeartbeatEvent =
   | { type: 'MAYOR_MISSING';      last_seen_at: string; active_convoy_id: string };
 ```
 
-The heartbeat monitor does NOT make inference calls. It only reads MemPalace state and monitors the Groq health endpoint (`GET https://api.groq.com/openai/v1/models`).
+The heartbeat monitor does NOT make inference calls. It only reads Ledger state and monitors the Groq health endpoint (`GET https://api.groq.com/openai/v1/models`).
 
 ---
 

@@ -13,7 +13,6 @@ import * as fs from 'fs';
 import { Mayor } from '../../src/roles/mayor';
 import { Ledger } from '../../src/ledger/index';
 import { ConvoyBus } from '../../src/convoys/bus';
-import { MemPalaceClient } from '../../src/mempalace/client';
 import { generateKeyPair } from '../../src/convoys/sign';
 import type { Bead, HeartbeatEvent } from '../../src/types/index';
 
@@ -66,7 +65,6 @@ describe('Cascade blocking (HARDENING.md §2.3)', () => {
     });
     ledger = new Ledger();
     bus = new ConvoyBus('cascade-rig');
-    jest.spyOn(MemPalaceClient.prototype, 'addDrawer').mockResolvedValue({ id: 'ok' });
     jest.spyOn(ConvoyBus.prototype, 'send').mockResolvedValue(undefined);
   });
 

@@ -4,7 +4,7 @@ Run `nt prime` for full session context after compaction, clear, or new session.
 
 ## Startup
 
-Check `nt status` to see if MemPalace is running. If not, `nt up` starts it.
+Run `nt status` to confirm the rig and agent ID are loaded.
 
 ## Interaction model
 
@@ -27,9 +27,11 @@ For an interactive session (like this one), run `nt` with no arguments.
 | Mayor | `src/roles/mayor.ts` | Orchestrator — decomposes tasks into beads |
 | Polecats | `src/roles/polecat.ts` | Workers — execute beads |
 | Witnesses | `src/roles/witness.ts` | Reviewers — score completions |
-| MemPalace | `mempalace-server/` | Memory sidecar (Python/FastAPI, port 7474) |
 | Convoys | `src/convoys/` | Signed message bus |
 | KG | `src/kg/` | Knowledge graph for model routing |
+| Ledger | `src/ledger/` | JSONL bead log (persistence layer) |
+
+Memory: Agent memory is provided by the Ledger (`rigs/{rig}/beads/current.jsonl`) and the Knowledge Graph (`palace-db/knowledge_graph.sqlite`). No external memory server is required.
 
 Full architecture docs: `docs/`
 

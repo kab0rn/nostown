@@ -2,9 +2,7 @@
 
 import { Ledger } from '../ledger/index.js';
 import { KnowledgeGraph } from '../kg/index.js';
-import { MemPalaceClient } from '../mempalace/client.js';
 import { GroqProvider } from '../groq/provider.js';
-import { GroqBatchClient } from '../groq/batch.js';
 import { detectStackFamily } from '../swarm/tools.js';
 import type { Bead, InferenceParams, PlaybookEntry } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -12,46 +10,29 @@ import { v4 as uuidv4 } from 'uuid';
 export interface HistorianConfig {
   agentId: string;
   groqApiKey?: string;
-  palaceUrl?: string;
   kgPath?: string;
-  /**
-   * Optional Groq Batch client for cost-efficient 70B playbook synthesis.
-   * Per GROQ_INTEGRATION.md §Batch API: 50% cost reduction for nightly runs.
-   * If not provided, falls back to sequential real-time inference.
-   */
-  batchClient?: GroqBatchClient;
 }
 
 export class Historian {
   private agentId: string;
   private ledger: Ledger;
   private kg: KnowledgeGraph;
-  private palace: MemPalaceClient;
   private provider: GroqProvider;
-  private batchClient: GroqBatchClient | null;
 
   constructor(config: HistorianConfig) {
     this.agentId = config.agentId;
     this.ledger = new Ledger();
     this.kg = new KnowledgeGraph(config.kgPath);
-    this.palace = new MemPalaceClient(config.palaceUrl);
     this.provider = new GroqProvider(config.groqApiKey);
-    this.batchClient = config.batchClient ?? null;
   }
 
   /**
    * Nightly Historian pipeline:
-   * 1. Export beads from ledger into classified MemPalace halls
-   * 2. Mine patterns
-   * 3. Generate playbooks for high-success task types
-   * 4. Update KG routing triples
-   *
-   * HISTORIAN.md §Implementation Detail: auto-classify beads into:
-   *   hall_facts        — permanent config/team truths
-   *   hall_events       — session milestones (all resolved beads)
-   *   hall_discoveries  — BLOCKED resolutions and novel findings
-   *   hall_preferences  — model routing preferences
-   *   hall_advice       — Playbooks (validated strategies)
+   * 1. Read beads from Ledger
+   * 2. Mine patterns (minePatterns)
+   * 3. Generate playbooks via Groq inference
+   * 4. Write routing KG triples (updateRoutingKG)
+   * 5. Record rig wing in KG (detectAndRegisterTunnels simplified)
    */
   async runNightly(rigName: string): Promise<void> {
     console.log(`[Historian:${this.agentId}] Starting nightly run for rig: ${rigName}`);
@@ -62,119 +43,24 @@ export class Historian {
       return;
     }
 
-    // Check for prior interrupted run — load completed step markers from hall_events
-    // Per HARDENING.md: interrupted runs can resume from the last completed step.
-    const runDate = new Date().toISOString().slice(0, 10);
-    const completedSteps = await this.loadCompletedSteps(rigName, runDate);
-    console.log(`[Historian:${this.agentId}] Prior completed steps: [${[...completedSteps].join(', ')}]`);
-
-    // 1. Export beads to classified MemPalace halls (with PII stripping)
-    if (!completedSteps.has('classify_beads')) {
-      await this.classifyBeadsToHalls(rigName, beads);
-      await this.writeStepProgress(rigName, runDate, 'classify_beads', beads.length);
-    }
-
-    // 2. AAAK COMPRESS bead manifest for Mayor context loading
-    if (!completedSteps.has('aaak_manifest')) {
-      const manifest = this.generateAaakManifest(beads.slice(-500));
-      try {
-        await this.palace.addDrawer(
-          `wing_rig_${rigName}`,
-          'hall_facts',
-          'aaak_manifest',
-          manifest,
-          'aaak manifest bead summary',
-        );
-        await this.writeStepProgress(rigName, runDate, 'aaak_manifest', beads.length);
-      } catch (err) {
-        console.warn(`[Historian] AAAK manifest write failed: ${String(err)}`);
-      }
-    }
-
-    // 3. Mine patterns
+    // 1. Mine patterns
     const patterns = this.minePatterns(beads);
-    await this.writeStepProgress(rigName, runDate, 'mine_patterns', patterns.size);
 
-    // 4. Generate playbooks for high-success task types
-    if (!completedSteps.has('generate_playbooks')) {
-      await this.generatePlaybooks(rigName, patterns, beads);
-      await this.writeStepProgress(rigName, runDate, 'generate_playbooks', patterns.size);
-    }
+    // 2. Generate playbooks for high-success task types
+    await this.generatePlaybooks(rigName, patterns, beads);
 
-    // 5. Update KG routing based on model performance
-    if (!completedSteps.has('update_routing_kg')) {
-      await this.updateRoutingKG(patterns);
-      await this.writeStepProgress(rigName, runDate, 'update_routing_kg', patterns.size);
-    }
+    // 3. Update KG routing based on model performance
+    await this.updateRoutingKG(patterns);
 
-    // 6. Detect cross-rig tunnel-eligible rooms (ROUTING.md §Cross-Rig Routing)
-    if (!completedSteps.has('detect_tunnels')) {
-      await this.detectAndRegisterTunnels(rigName);
-      await this.writeStepProgress(rigName, runDate, 'detect_tunnels', 0);
-    }
-
-    // 7. Write AAAK-compressed diary entry (HISTORIAN.md §Nightly Pipeline step 7)
-    // Per spec: content=nightly_summary_aaak — use AAAK compression for token efficiency
-    // when the Mayor reads this back via diaryRead during palace wakeup.
-    try {
-      const aaakSummary = this.generateAaakManifest(beads.slice(-200));
-      await this.palace.diaryWrite('wing_historian', aaakSummary);
-    } catch (err) {
-      console.warn(`[Historian] Diary write failed: ${String(err)}`);
-    }
+    // 4. Record rig wing in KG for future cross-rig discovery
+    await this.recordRigWing(rigName);
 
     console.log(`[Historian:${this.agentId}] Nightly run complete`);
   }
 
   /**
-   * Write a step-completed progress marker to wing_historian/hall_events.
-   * Per HARDENING.md: interrupted nightly runs resume from last completed step.
-   */
-  private async writeStepProgress(rigName: string, runDate: string, step: string, count: number): Promise<void> {
-    try {
-      await this.palace.addDrawer(
-        'wing_historian',
-        'hall_events',
-        `nightly_progress_${rigName}_${runDate}_${step}`,
-        JSON.stringify({ step, rig: rigName, date: runDate, count, completed_at: new Date().toISOString() }),
-        `nightly run step: ${step}`,
-      );
-    } catch {
-      // Non-fatal — progress marker is best-effort
-    }
-  }
-
-  /**
-   * Load step markers from a prior nightly run for this rig+date.
-   * Returns set of completed step names.
-   */
-  private async loadCompletedSteps(rigName: string, runDate: string): Promise<Set<string>> {
-    const steps = new Set<string>();
-    try {
-      const search = await this.palace.search(
-        `nightly run step ${rigName} ${runDate}`,
-        'wing_historian',
-        'hall_events',
-      );
-      for (const r of search.results) {
-        try {
-          const data = JSON.parse(r.content) as { step?: string; rig?: string; date?: string };
-          if (data.rig === rigName && data.date === runDate && data.step) {
-            steps.add(data.step);
-          }
-        } catch {
-          // ignore non-JSON entries
-        }
-      }
-    } catch {
-      // palace offline — start fresh (no resume possible)
-    }
-    return steps;
-  }
-
-  /**
    * PII stripping: removes tokens that look like secrets, emails, or API keys
-   * before writing bead content to MemPalace or the KG.
+   * before writing bead content to the KG or other stores.
    * Per HISTORIAN.md: PII-stripping MUST run before any mining write.
    */
   private stripPii(text: string): string {
@@ -185,83 +71,6 @@ export class Historian {
       .replace(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g, '[REDACTED_EMAIL]')
       // Generic long hex / base64 tokens (32+ chars)
       .replace(/[A-Za-z0-9+/=]{32,}/g, '[REDACTED_TOKEN]');
-  }
-
-  /**
-   * Classify beads into the correct MemPalace halls.
-   * Per HISTORIAN.md §Implementation Detail — hall mapping:
-   *   hall_events       → all resolved beads (session milestones)
-   *   hall_discoveries  → beads that were BLOCKED before resolving (novel unblocking)
-   *   hall_preferences  → beads that inform model routing (SUCCESS + high-success model)
-   *   hall_facts        → task types with a very high win rate (team truths)
-   */
-  private async classifyBeadsToHalls(rigName: string, beads: Bead[]): Promise<void> {
-    const wing = `wing_rig_${rigName}`;
-    const done = beads.filter((b) => b.status === 'done' || b.outcome === 'SUCCESS');
-
-    // Limit to most recent 100 to avoid palace saturation
-    for (const bead of done.slice(-100)) {
-      const rawContent = JSON.stringify({
-        bead_id: bead.bead_id,
-        task_type: bead.task_type,
-        model: bead.model,
-        outcome: bead.outcome,
-        duration_ms: bead.metrics?.duration_ms,
-        task_description: bead.task_description?.slice(0, 200),
-      });
-      const content = this.stripPii(rawContent);
-      const embedding = `${bead.task_type} ${bead.outcome ?? ''} ${bead.model}`;
-
-      try {
-        // Always write to hall_events (session milestone)
-        await this.palace.addDrawer(wing, 'hall_events', bead.bead_id, content, embedding);
-
-        // hall_discoveries: beads that had a blocked predecessor before resolving
-        if (bead.needs && bead.needs.length > 0 && bead.outcome === 'SUCCESS') {
-          await this.palace.addDrawer(
-            wing, 'hall_discoveries',
-            `discovery_${bead.bead_id}`,
-            content,
-            `unblocked ${bead.task_type}`,
-          );
-        }
-
-        // hall_preferences: successful beads inform model preference
-        if (bead.outcome === 'SUCCESS' && bead.model) {
-          await this.palace.addDrawer(
-            wing, 'hall_preferences',
-            `pref_${bead.model}_${bead.task_type}`,
-            JSON.stringify({ model: bead.model, task_type: bead.task_type, outcome: 'SUCCESS' }),
-            `preference ${bead.model} ${bead.task_type}`,
-          );
-        }
-      } catch {
-        // non-fatal — individual classification failure should not abort the pipeline
-      }
-    }
-  }
-
-  private async exportBeads(rigName: string, beads: Bead[]): Promise<void> {
-    const done = beads.filter((b) => b.status === 'done' || b.outcome === 'SUCCESS');
-    for (const bead of done.slice(-100)) { // last 100 to avoid blowing up
-      try {
-        await this.palace.addDrawer(
-          `wing_rig_${rigName}`,
-          'hall_events',
-          bead.bead_id,
-          JSON.stringify({
-            bead_id: bead.bead_id,
-            task_type: bead.task_type,
-            model: bead.model,
-            outcome: bead.outcome,
-            duration_ms: bead.metrics?.duration_ms,
-          }),
-          `${bead.task_type} ${bead.outcome ?? ''} ${bead.model}`,
-        );
-      } catch {
-        // non-fatal
-      }
-    }
   }
 
   private minePatterns(beads: Bead[]): Map<string, { success: number; fail: number; models: Map<string, number>; totalMs: number }> {
@@ -318,52 +127,14 @@ export class Historian {
 
     if (eligible.length === 0) return;
 
-    // Use Batch API when available (50% cost reduction per GROQ_INTEGRATION.md §Batch API)
-    // Fall back to sequential real-time inference when batchClient not configured
-    const playbookResults = this.batchClient && eligible.length >= 2
-      ? await this.generatePlaybooksBatch(eligible)
-      : await this.generatePlaybooksSequential(eligible);
+    const playbookResults = await this.generatePlaybooksSequential(eligible);
 
-    // Detect dominant stack family for this rig — included in playbook metadata for tunnel safety guard
+    // Detect dominant stack family for this rig
     const rigStack = detectStackFamily(beads);
 
     for (const { ctx, playbook } of playbookResults) {
       if (!playbook) continue;
-      const { taskType, stats, successRate, bestModel } = ctx;
-
-      const playbookWithMeta = {
-        ...playbook,
-        success_rate: successRate,
-        sample_size: stats.success + stats.fail,
-        last_updated: new Date().toISOString(),
-        // Stack family + rig for cross-rig tunnel safety guard (ROUTING.md §Tunnel Safety Guard)
-        stack: rigStack,
-        rig: rigName,
-      };
-
-      try {
-        await this.palace.addDrawer(
-          `wing_rig_${rigName}`,
-          'hall_advice',
-          `playbook_${taskType}`,
-          this.stripPii(JSON.stringify(playbookWithMeta)),
-          `playbook ${taskType} ${bestModel}`,
-        );
-      } catch (err) {
-        console.warn(`[Historian] Playbook write failed: ${String(err)}`);
-      }
-
-      if (successRate >= 0.95 && (stats.success + stats.fail) >= 20) {
-        try {
-          await this.palace.addDrawer(
-            `wing_rig_${rigName}`,
-            'hall_facts',
-            `fact_${taskType}`,
-            JSON.stringify({ task_type: taskType, best_model: bestModel, success_rate: successRate }),
-            `proven pattern ${taskType}`,
-          );
-        } catch { /* non-fatal */ }
-      }
+      const { taskType, stats, successRate } = ctx;
 
       const today = new Date().toISOString().slice(0, 10);
       this.kg.addTriple({
@@ -372,13 +143,15 @@ export class Historian {
         object: `playbook_${taskType}_${playbook.id}`,
         valid_from: today,
         agent_id: this.agentId,
-        metadata: { class: 'advisory', task_type: taskType, success_rate: successRate },
+        metadata: { class: 'advisory', task_type: taskType, success_rate: successRate, stack: rigStack },
         created_at: new Date().toISOString(),
       });
+
+      void stats; // used above for successRate computation
     }
   }
 
-  /** Sequential (real-time) playbook generation — fallback when no batch client */
+  /** Sequential (real-time) playbook generation */
   private async generatePlaybooksSequential(
     eligible: Array<{ taskType: string; stats: { success: number; fail: number; models: Map<string, number> }; successRate: number; bestModel: string; samples: (string | undefined)[] }>,
   ): Promise<Array<{ ctx: (typeof eligible)[number]; playbook: PlaybookEntry | null }>> {
@@ -388,73 +161,6 @@ export class Historian {
       results.push({ ctx, playbook });
     }
     return results;
-  }
-
-  /**
-   * Batch (70B) playbook synthesis via Groq Batch API.
-   * (GROQ_INTEGRATION.md §Batch API — 50% cost reduction for nightly synthesis)
-   * Submits all playbook generation requests as a single batch job,
-   * waits for completion, and distills JSONL output into PlaybookEntry objects.
-   */
-  private async generatePlaybooksBatch(
-    eligible: Array<{ taskType: string; stats: { success: number; fail: number; models: Map<string, number> }; successRate: number; bestModel: string; samples: (string | undefined)[] }>,
-  ): Promise<Array<{ ctx: (typeof eligible)[number]; playbook: PlaybookEntry | null }>> {
-    if (!this.batchClient) return this.generatePlaybooksSequential(eligible);
-
-    // Build batch requests — one per eligible task type
-    const requests = eligible.map((ctx) => ({
-      custom_id: ctx.taskType,
-      method: 'POST' as const,
-      url: '/v1/chat/completions' as const,
-      body: {
-        model: 'llama-3.3-70b-versatile', // 70B for synthesis quality
-        messages: [
-          {
-            role: 'system' as const,
-            content: 'Generate a concise playbook for a task type. Output JSON: { "title": string, "steps": [string], "tips": [string] }',
-          },
-          {
-            role: 'user' as const,
-            content: `Task type: ${ctx.taskType}\nBest model: ${ctx.bestModel}\nExample tasks:\n${ctx.samples.filter(Boolean).join('\n')}`,
-          },
-        ],
-        temperature: 0.3,
-      },
-    }));
-
-    try {
-      console.log(`[Historian] Starting Batch API synthesis for ${requests.length} playbooks`);
-      const batchResults = await this.batchClient.runBatch(requests);
-
-      // Map results back to eligible contexts
-      const resultMap = new Map(batchResults.map((r) => [r.custom_id, r]));
-      return eligible.map((ctx) => {
-        const result = resultMap.get(ctx.taskType);
-        if (!result?.response?.body?.choices?.[0]?.message.content) {
-          return { ctx, playbook: null };
-        }
-        try {
-          const parsed = JSON.parse(result.response.body.choices[0].message.content) as {
-            title?: string;
-            steps?: string[];
-          };
-          const playbook: PlaybookEntry = {
-            id: uuidv4().slice(0, 8),
-            title: String(parsed.title ?? ctx.taskType),
-            task_type: ctx.taskType,
-            steps: Array.isArray(parsed.steps) ? parsed.steps.map(String) : [],
-            model_hint: ctx.bestModel,
-            created_at: new Date().toISOString(),
-          };
-          return { ctx, playbook };
-        } catch {
-          return { ctx, playbook: null };
-        }
-      });
-    } catch (err) {
-      console.warn(`[Historian] Batch synthesis failed, falling back to sequential: ${String(err)}`);
-      return this.generatePlaybooksSequential(eligible);
-    }
   }
 
   private async generatePlaybook(
@@ -556,47 +262,23 @@ export class Historian {
   }
 
   /**
-   * Backfill any beads from the ledger that are missing from MemPalace drawers.
-   * Per HARDENING.md §124: compares beads.jsonl against palace Drawers by bead_id.
-   * Returns count of beads backfilled.
+   * Record this rig's wing in the KG for future cross-rig discovery.
+   * Simplified from the palace-backed version: no tunnel registration,
+   * just records the current rig wing as a KG triple.
    */
-  async backfillMissingDrawers(rigName: string): Promise<number> {
-    const beads = this.ledger.readBeads(rigName);
-    const done = beads.filter((b) => b.status === 'done' || b.outcome === 'SUCCESS');
-    let backfilled = 0;
+  private async recordRigWing(rigName: string): Promise<void> {
+    const myWing = `wing_rig_${rigName}`;
+    const today = new Date().toISOString().slice(0, 10);
 
-    for (const bead of done) {
-      try {
-        // Search palace for this bead_id in hall_events
-        const result = await this.palace.search(bead.bead_id, `wing_rig_${rigName}`, 'hall_events');
-        const found = result.results.some((r) => r.room_id === bead.bead_id);
-
-        if (!found) {
-          await this.palace.addDrawer(
-            `wing_rig_${rigName}`,
-            'hall_events',
-            bead.bead_id,
-            JSON.stringify({
-              bead_id: bead.bead_id,
-              task_type: bead.task_type,
-              model: bead.model,
-              outcome: bead.outcome,
-              duration_ms: bead.metrics?.duration_ms,
-            }),
-            `${bead.task_type} ${bead.outcome ?? ''} ${bead.model}`,
-          );
-          backfilled++;
-          console.log(`[Historian:${this.agentId}] Backfilled missing drawer for bead ${bead.bead_id}`);
-        }
-      } catch (err) {
-        console.warn(`[Historian:${this.agentId}] Backfill check failed for ${bead.bead_id}: ${String(err)}`);
-      }
-    }
-
-    if (backfilled > 0) {
-      console.log(`[Historian:${this.agentId}] Backfill complete: ${backfilled}/${done.length} beads re-inserted`);
-    }
-    return backfilled;
+    this.kg.addTriple({
+      subject: 'historian_wings',
+      relation: 'registered',
+      object: myWing,
+      valid_from: today,
+      agent_id: this.agentId,
+      metadata: { class: 'advisory' },
+      created_at: new Date().toISOString(),
+    });
   }
 
   /**
@@ -721,6 +403,8 @@ export class Historian {
       })
       .join(' | ');
 
+    void usedTasks; // built up for potential future use
+
     const header = [
       '# AAAK entity codes:',
       `# roles: ${roleHeader}`,
@@ -729,71 +413,6 @@ export class Historian {
     ].join('\n');
 
     return header + lines.join('\n');
-  }
-
-  /**
-   * Detect cross-rig tunnel-eligible rooms and register them.
-   * (ROUTING.md §Cross-Rig Routing Acceleration)
-   * Compares room names in the current rig's wing against other known wings.
-   * Rooms appearing in ≥2 wings are eligible for tunnel registration.
-   */
-  private async detectAndRegisterTunnels(rigName: string): Promise<void> {
-    try {
-      // Get rooms in this rig's wing
-      const myWing = `wing_rig_${rigName}`;
-      const myRooms = await this.palace.listRooms(myWing);
-      const myRoomNames = new Set(myRooms.map((r) => r.id));
-
-      // Get existing tunnels to avoid duplicates
-      const existingTunnels = await this.palace.getTunnels();
-      const existingKeys = new Set(
-        existingTunnels.map((t) => `${t.wing_a}|${t.wing_b}|${t.room_name}`),
-      );
-
-      // Check KG for other known rig wings (stored as 'active' triples on wing subjects)
-      const today = new Date().toISOString().slice(0, 10);
-      const otherWings = this.kg.queryTriples('historian_wings', today, 'registered')
-        .map((t) => t.object)
-        .filter((w) => w !== myWing);
-
-      let registered = 0;
-      for (const otherWing of otherWings) {
-        try {
-          const otherRooms = await this.palace.listRooms(otherWing);
-          for (const room of otherRooms) {
-            if (myRoomNames.has(room.id)) {
-              const tunnelKey = `${myWing}|${otherWing}|${room.id}`;
-              const reverseKey = `${otherWing}|${myWing}|${room.id}`;
-              if (!existingKeys.has(tunnelKey) && !existingKeys.has(reverseKey)) {
-                await this.palace.registerTunnel(myWing, otherWing, room.id);
-                existingKeys.add(tunnelKey);
-                registered++;
-                console.log(`[Historian] Registered tunnel: ${room.id} between ${myWing} ↔ ${otherWing}`);
-              }
-            }
-          }
-        } catch {
-          // Other wing unavailable — skip
-        }
-      }
-
-      // Record this wing as known for future cross-rig discovery
-      this.kg.addTriple({
-        subject: 'historian_wings',
-        relation: 'registered',
-        object: myWing,
-        valid_from: today,
-        agent_id: this.agentId,
-        metadata: { class: 'advisory', room_count: String(myRoomNames.size) },
-        created_at: new Date().toISOString(),
-      });
-
-      if (registered > 0) {
-        console.log(`[Historian] Tunnel detection complete: ${registered} new tunnels registered`);
-      }
-    } catch (err) {
-      console.warn(`[Historian] Tunnel detection failed (non-fatal): ${String(err)}`);
-    }
   }
 
   close(): void {

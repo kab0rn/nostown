@@ -38,8 +38,7 @@ async function orchestrateTask(description: string, mayor: Mayor): Promise<void>
 }
 
 function showStatus(): void {
-  const palaceUrl = process.env.MEMPALACE_URL ?? 'http://localhost:7474';
-  console.log(`Mayor: ${AGENT_ID}   Rig: ${RIG_NAME}   Palace: ${palaceUrl}`);
+  console.log(`Mayor: ${AGENT_ID}   Rig: ${RIG_NAME}`);
 }
 
 function showHelp(): void {
@@ -49,7 +48,6 @@ function showHelp(): void {
     `Usage:\n` +
     `  nt                  Interactive session\n` +
     `  nt <task>           Orchestrate any task — plain text, no syntax\n` +
-    `  nt up               Start MemPalace server\n` +
     `  nt status           Show system status\n` +
     `\n` +
     `Examples:\n` +
@@ -72,8 +70,7 @@ function nextLine(rl: readline.Interface, prompt: string): Promise<string | null
 }
 
 async function runRepl(mayor: Mayor): Promise<void> {
-  const palaceUrl = process.env.MEMPALACE_URL ?? 'http://localhost:7474';
-  console.log(`NOS Town  ${AGENT_ID} / ${RIG_NAME}  ${palaceUrl}`);
+  console.log(`NOS Town  ${AGENT_ID} / ${RIG_NAME}`);
   console.log(`Type a task, 'status', or 'exit'.\n`);
 
   const rl = readline.createInterface({

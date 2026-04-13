@@ -2,7 +2,6 @@
 
 import { GroqProvider } from '../groq/provider.js';
 import { Ledger } from '../ledger/index.js';
-import { MemPalaceClient } from '../mempalace/client.js';
 import type { SafeguardPool } from './safeguard.js';
 import type { Bead, InferenceParams, HeartbeatEvent } from '../types/index.js';
 import { beadThroughput } from '../telemetry/metrics.js';
@@ -14,7 +13,6 @@ export interface PolecatConfig {
   rigName: string;
   groqApiKey?: string;
   emitHeartbeat?: HeartbeatEmitter;
-  palaceUrl?: string;
   /**
    * Optional Safeguard pool for pre-write diff scanning.
    * Per HARDENING.md §4.1: Safeguard scans result diff before FILE_WRITE.
@@ -35,7 +33,6 @@ export class Polecat {
   private rigName: string;
   private provider: GroqProvider;
   private ledger: Ledger;
-  private palace: MemPalaceClient;
   private safeguard: SafeguardPool | null;
   private emitHeartbeat: HeartbeatEmitter | null;
 
@@ -48,7 +45,6 @@ export class Polecat {
     this.rigName = config.rigName;
     this.provider = new GroqProvider(config.groqApiKey, config.emitHeartbeat);
     this.ledger = new Ledger();
-    this.palace = new MemPalaceClient(config.palaceUrl);
     this.safeguard = config.safeguard ?? null;
     this.emitHeartbeat = config.emitHeartbeat ?? null;
   }
@@ -63,7 +59,7 @@ export class Polecat {
 
   /**
    * Execute a bead task.
-   * Checkpoints to MemPalace, calls Groq, writes result to ledger.
+   * Calls Groq, writes result to ledger.
    */
   async execute(bead: Bead, context: ExecutionContext): Promise<Bead> {
     this.activeBead = bead.bead_id;
@@ -92,19 +88,6 @@ export class Polecat {
       updated_at: new Date().toISOString(),
     };
     await this.ledger.appendBead(this.rigName, inProgress);
-
-    // Checkpoint to MemPalace before starting
-    try {
-      await this.palace.addDrawer(
-        `wing_rig_${this.rigName}`,
-        'hall_events',
-        bead.bead_id,
-        JSON.stringify({ agent_id: this.agentId, bead_id: bead.bead_id, status: 'started', ts: new Date().toISOString() }),
-        `polecat task ${bead.task_type}`,
-      );
-    } catch (err) {
-      console.warn(`[Polecat:${this.agentId}] MemPalace checkpoint failed (non-fatal): ${String(err)}`);
-    }
 
     const startMs = Date.now();
 
@@ -176,19 +159,6 @@ export class Polecat {
         updated_at: new Date().toISOString(),
       };
       await this.ledger.appendBead(this.rigName, done);
-
-      // Write result to MemPalace
-      try {
-        await this.palace.addDrawer(
-          `wing_rig_${this.rigName}`,
-          'hall_discoveries',
-          bead.bead_id,
-          result,
-          `${bead.task_type} result ${bead.bead_id}`,
-        );
-      } catch (err) {
-        console.warn(`[Polecat:${this.agentId}] MemPalace result write failed: ${String(err)}`);
-      }
 
       beadThroughput.add(1, { role: bead.role, task_type: bead.task_type });
       this.activeBead = null;

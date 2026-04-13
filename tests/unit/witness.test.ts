@@ -1,6 +1,6 @@
-// Unit tests for the Witness agent — isolated (no real Groq / MemPalace calls)
+// Unit tests for the Witness agent — isolated (no real Groq calls)
 // Covers: single-judge review, 3-judge council (critical), majority logic,
-// diary context injection, KG triple write, judge failure fallback.
+// KG triple write, judge failure fallback.
 
 import { jest } from '@jest/globals';
 import path from 'path';
@@ -16,21 +16,6 @@ jest.mock('../../src/groq/provider.js', () => ({
   })),
 }));
 
-// --- mock MemPalaceClient ---
-const mockDiaryRead = jest.fn<(wing: string, limit: number) => Promise<Array<{ content: string }>>>();
-const mockDiaryWrite = jest.fn<(wing: string, entry: string) => Promise<void>>();
-const mockAddDrawer = jest.fn<(wing: string, hall: string, room: string, content: string, summary: string) => Promise<void>>();
-const mockSearch = jest.fn<() => Promise<{ results: unknown[]; total: number }>>();
-jest.mock('../../src/mempalace/client.js', () => ({
-  __esModule: true,
-  MemPalaceClient: jest.fn().mockImplementation(() => ({
-    diaryRead: mockDiaryRead,
-    diaryWrite: mockDiaryWrite,
-    addDrawer: mockAddDrawer,
-    search: mockSearch,
-  })),
-}));
-
 import { Witness } from '../../src/roles/witness.js';
 import { KnowledgeGraph } from '../../src/kg/index.js';
 
@@ -39,14 +24,6 @@ let kgPath: string;
 beforeEach(() => {
   kgPath = path.join(os.tmpdir(), `witness_test_${Date.now()}_${Math.random().toString(36).slice(2)}.sqlite`);
   mockExecuteInference.mockReset();
-  mockDiaryRead.mockReset();
-  mockDiaryWrite.mockReset();
-  mockAddDrawer.mockReset();
-  mockSearch.mockReset();
-  mockDiaryRead.mockResolvedValue([]);
-  mockDiaryWrite.mockResolvedValue(undefined);
-  mockAddDrawer.mockResolvedValue(undefined);
-  mockSearch.mockResolvedValue({ results: [], total: 0 });
 });
 
 afterEach(() => {
@@ -154,63 +131,7 @@ describe('Witness.review() — 3-judge council (critical)', () => {
   });
 });
 
-describe('Witness.review() — diary context', () => {
-  test('reads diary before reviewing and injects prior context into prompt', async () => {
-    mockDiaryRead.mockResolvedValue([
-      { content: 'PR pr-008: REJECTED (0/1) — Missing null check' },
-    ]);
-    mockExecuteInference.mockResolvedValue(approveResponse());
-
-    const w = makeWitness();
-    await w.review('diff', 'req', 'pr-008');
-    w.close();
-
-    const callArgs = mockExecuteInference.mock.calls[0][0] as {
-      messages: Array<{ role: string; content: string }>;
-    };
-    const userMsg = callArgs.messages.find((m) => m.role === 'user')?.content ?? '';
-    expect(userMsg).toContain('Previous reviews for this PR');
-    expect(userMsg).toContain('Missing null check');
-  });
-
-  test('proceeds without diary context if palace unavailable (non-fatal)', async () => {
-    mockDiaryRead.mockRejectedValue(new Error('Palace offline'));
-    mockExecuteInference.mockResolvedValue(approveResponse());
-
-    const w = makeWitness();
-    const verdict = await w.review('diff', 'req', 'pr-009');
-    w.close();
-
-    expect(verdict.approved).toBe(true);
-  });
-
-  test('writes diary entry after review', async () => {
-    mockExecuteInference.mockResolvedValue(approveResponse());
-
-    const w = makeWitness();
-    await w.review('diff', 'req', 'pr-010');
-    w.close();
-
-    expect(mockDiaryWrite).toHaveBeenCalledWith(
-      'wing_witness',
-      expect.stringContaining('pr-010'),
-    );
-  });
-
-  test('diary entry includes APPROVED/REJECTED and score', async () => {
-    mockExecuteInference.mockResolvedValue(rejectResponse('Security issue'));
-
-    const w = makeWitness();
-    await w.review('diff', 'req', 'pr-011');
-    w.close();
-
-    const diaryEntry = mockDiaryWrite.mock.calls[0][1];
-    expect(diaryEntry).toContain('REJECTED');
-    expect(diaryEntry).toContain('0/1');
-  });
-});
-
-describe('Witness.review() — KG triple and MemPalace write', () => {
+describe('Witness.review() — KG triple write', () => {
   test('writes KG triple with approved relation on approval', async () => {
     mockExecuteInference.mockResolvedValue(approveResponse());
 
@@ -244,37 +165,6 @@ describe('Witness.review() — KG triple and MemPalace write', () => {
     expect(rejected).toHaveLength(1);
   });
 
-  test('writes hall_events drawer to MemPalace', async () => {
-    mockExecuteInference.mockResolvedValue(approveResponse());
-
-    const w = makeWitness();
-    await w.review('diff', 'req', 'pr-014');
-    w.close();
-
-    expect(mockAddDrawer).toHaveBeenCalledWith(
-      'wing_rig_test-rig',
-      'hall_events',
-      'witness_pr-014',
-      expect.stringContaining('"pr_id":"pr-014"'),
-      expect.stringContaining('pr-014'),
-    );
-  });
-
-  test('continues if MemPalace drawer write fails (non-fatal)', async () => {
-    mockExecuteInference.mockResolvedValue(approveResponse());
-    mockAddDrawer.mockRejectedValue(new Error('Palace write failed'));
-
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-
-    const w = makeWitness();
-    const verdict = await w.review('diff', 'req', 'pr-015');
-    w.close();
-
-    expect(verdict.approved).toBe(true);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('MemPalace write failed'));
-
-    warnSpy.mockRestore();
-  });
 });
 
 describe('Witness.review() — judge failure handling', () => {
@@ -392,91 +282,3 @@ describe('Witness.review() — per-judge KG vote logging (ROLES.md §Quality Tun
   });
 });
 
-describe('Witness council recovery (RESILIENCE.md §Witness Council Recovery)', () => {
-  test('checkpoints each judge vote to MemPalace during critical review', async () => {
-    mockExecuteInference.mockResolvedValue(approveResponse('checkpoint test'));
-
-    const w = makeWitness();
-    await w.review('diff', 'req', 'pr-recovery-001', true);
-    w.close();
-
-    // Each of the 3 judges should have triggered a checkpoint (addDrawer for partial vote)
-    const voteCheckpoints = mockAddDrawer.mock.calls.filter(
-      (call) => String(call[2]).includes('-vote'),
-    );
-    expect(voteCheckpoints).toHaveLength(3);
-    // Each checkpoint should contain judge_id and council_id
-    for (const [,,, content] of voteCheckpoints) {
-      const parsed = JSON.parse(String(content)) as Record<string, unknown>;
-      expect(parsed.judge_id).toBeTruthy();
-      expect(parsed.council_id).toBeTruthy();
-      expect(parsed.ts).toBeTruthy();
-    }
-  });
-
-  test('skips completed judges when partial votes found (same council_id)', async () => {
-    // Simulate judge_0 already voted (same council session)
-    // We can't control councilId from outside, so we test that search is called
-    // and that when it returns a vote, that judge index is skipped.
-    // Use a spy to capture the councilId from the first judge checkpoint.
-    let capturedCouncilId: string | null = null;
-    mockAddDrawer.mockImplementation(async (wing, hall, room, content) => {
-      if (String(room).includes('-vote') && !capturedCouncilId) {
-        const parsed = JSON.parse(String(content)) as { council_id?: string; judge_id?: string };
-        capturedCouncilId = parsed.council_id ?? null;
-      }
-    });
-
-    // Set up search to return a partial vote for judge_0 after council starts
-    // The first call to loadPartialVotes will find no partial votes (empty council)
-    // On second attempt we can't inject mid-flight, so verify behavior instead:
-    // With no partial votes returned, all 3 judges run → 3 inference calls.
-    mockExecuteInference.mockResolvedValue(approveResponse('all judges run'));
-
-    const w = makeWitness();
-    await w.review('diff', 'req', 'pr-recovery-002', true);
-    w.close();
-
-    expect(mockExecuteInference).toHaveBeenCalledTimes(3);
-  });
-
-  test('all judges re-run when partial votes are stale (>24h old)', async () => {
-    const staleTs = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
-    // Return stale partial votes — they should be discarded
-    mockSearch.mockResolvedValueOnce({
-      results: [
-        {
-          content: JSON.stringify({
-            council_id: 'any-council', // different council anyway
-            judge_id: 'witness_01_judge_0',
-            approved: true,
-            score: 9,
-            comment: 'Old vote',
-            ts: staleTs,
-          }),
-        },
-      ],
-      total: 1,
-    });
-
-    mockExecuteInference.mockResolvedValue(approveResponse());
-
-    const w = makeWitness();
-    await w.review('diff', 'req', 'pr-recovery-003', true);
-    w.close();
-
-    // Stale votes discarded → all 3 judges run
-    expect(mockExecuteInference).toHaveBeenCalledTimes(3);
-  });
-
-  test('non-critical reviews do not load partial votes (no search call)', async () => {
-    mockExecuteInference.mockResolvedValue(approveResponse());
-
-    const w = makeWitness();
-    await w.review('diff', 'req', 'pr-recovery-004', false);
-    w.close();
-
-    // No search call for partial vote loading in non-critical mode
-    expect(mockSearch).not.toHaveBeenCalled();
-  });
-});

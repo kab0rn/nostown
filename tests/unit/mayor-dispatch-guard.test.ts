@@ -158,20 +158,9 @@ describe('Mayor CoVe — fan_out_weight and critical_path annotation', () => {
   // by using a mock that returns a multi-bead plan with dependencies
 
   it('fan_out_weight reflects number of downstream dependents', async () => {
-    const { MemPalaceClient } = await import('../../src/mempalace/client');
     const { GroqProvider } = await import('../../src/groq/provider');
 
-    // A plan with: root → child1, root → child2 (root has fan_out=2)
-    const multiBeadPlan = JSON.stringify({
-      beads: [
-        { task_type: 'execute', task_description: 'Root', role: 'polecat', needs: [], critical_path: true, witness_required: false, fan_out_weight: 1 },
-        { task_type: 'execute', task_description: 'Child 1', role: 'polecat', needs: [/* filled by ID below */], critical_path: false, witness_required: false, fan_out_weight: 1 },
-        { task_type: 'execute', task_description: 'Child 2', role: 'polecat', needs: [], critical_path: false, witness_required: false, fan_out_weight: 1 },
-      ],
-    });
-
     jest.spyOn(GroqProvider.prototype, 'executeInference').mockImplementation(async () => {
-      // Return a plan where beads[1] and beads[2] depend on beads[0]
       return JSON.stringify({
         beads: [
           { task_type: 'execute', task_description: 'Root task', role: 'polecat', needs: [], critical_path: true, witness_required: false, fan_out_weight: 1 },
@@ -180,10 +169,6 @@ describe('Mayor CoVe — fan_out_weight and critical_path annotation', () => {
         ],
       });
     });
-
-    jest.spyOn(MemPalaceClient.prototype, 'wakeup').mockRejectedValue(new Error('offline'));
-    jest.spyOn(MemPalaceClient.prototype, 'search').mockRejectedValue(new Error('offline'));
-    jest.spyOn(MemPalaceClient.prototype, 'saveCheckpoint').mockResolvedValue('ckpt-fan-out-test');
 
     const testMayor = new Mayor({ agentId: 'mayor_test', rigName: 'cove-rig', kgPath: TEST_DB });
 

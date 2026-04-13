@@ -13,7 +13,6 @@ import * as fs from 'fs';
 import { Mayor } from '../../src/roles/mayor';
 import { Ledger } from '../../src/ledger/index';
 import { ConvoyBus } from '../../src/convoys/bus';
-import { MemPalaceClient } from '../../src/mempalace/client';
 import { generateKeyPair } from '../../src/convoys/sign';
 import type { Bead } from '../../src/types/index';
 
@@ -59,7 +58,6 @@ describe('Rendezvous node dispatch blocking (SWARM.md §Rendezvous)', () => {
     mayor = new Mayor({ agentId: 'mayor_rndv_test', rigName: 'rndv-rig', kgPath: TEST_DB });
     ledger = new Ledger();
     bus = new ConvoyBus('rndv-rig');
-    jest.spyOn(MemPalaceClient.prototype, 'addDrawer').mockResolvedValue({ id: 'ok' });
     jest.spyOn(ConvoyBus.prototype, 'send').mockResolvedValue(undefined);
   });
 

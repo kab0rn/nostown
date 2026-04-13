@@ -7,14 +7,12 @@ import { KnowledgeGraph } from '../kg/index.js';
 import { kgQuery, kgInsert } from '../kg/tools.js';
 import { ConvoyBus } from '../convoys/bus.js';
 import { buildSignedConvoy, loadPrivateKey } from '../convoys/sign.js';
-import { MemPalaceClient } from '../mempalace/client.js';
 
 export type CustomHandler = (toolName: string, args: Record<string, unknown>, event: BeadEvent) => Promise<void>;
 
 export interface ActionHandlerContext {
   kg?: KnowledgeGraph;
   bus?: ConvoyBus;
-  palace?: MemPalaceClient;
   senderId?: string;
   nextSeq?: () => number;
   customHandlers?: Map<string, CustomHandler>;
@@ -35,15 +33,15 @@ async function handleMcpTool(
 
   switch (tool) {
     case 'historian_append':
-      // Write a discovery drawer to MemPalace
-      if (ctx.palace) {
-        await ctx.palace.addDrawer(
-          'wing_historian',
-          'hall_events',
-          `hist_${String(args['beadId'] ?? event.beadId)}`,
-          JSON.stringify({ beadId: args['beadId'], outcome: args['outcome'], timestamp: args['timestamp'] }),
-          `historian append ${String(args['outcome'] ?? '')}`,
-        );
+      // MemPalace removed — historian_append is a no-op; use KG write instead if needed
+      if (ctx.kg) {
+        kgInsert(ctx.kg, {
+          subject: String(args['beadId'] ?? event.beadId),
+          relation: 'historian_append',
+          object: String(args['outcome'] ?? event.outcome ?? 'unknown'),
+          agent_id: 'hook',
+          metadata: { timestamp: String(args['timestamp'] ?? event.timestamp) },
+        });
       }
       break;
 

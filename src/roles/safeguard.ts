@@ -1,9 +1,8 @@
 // NOS Town — Safeguard Pool (Security Scanner)
-// Per ROLES.md §Safeguard: maintains vulnerability memory in wing_safeguard/hall_facts.
-// Workers read known patterns at startup and persist newly discovered ones.
+// Per ROLES.md §Safeguard: maintains vulnerability rules and scans diffs.
+// Learned patterns from LLM scans are cached in-process (session-local only).
 
 import { GroqProvider } from '../groq/provider.js';
-import { MemPalaceClient } from '../mempalace/client.js';
 import { KnowledgeGraph } from '../kg/index.js';
 import type { ScanResult, InferenceParams } from '../types/index.js';
 import { safeguardQueueDepth, safeguardScanLatencyMs } from '../telemetry/metrics.js';
@@ -13,7 +12,6 @@ export interface SafeguardConfig {
   poolSize?: number;    // minimum 2
   groqApiKey?: string;
   rulesetCacheTtlMs?: number;
-  palaceUrl?: string;
   kgPath?: string;      // for writing LOCKDOWN KG triples
 }
 
@@ -88,10 +86,10 @@ function getOrLoadRules(ttlMs: number): SecurityRule[] {
   return rulesetCache.rules;
 }
 
-/** Cached learned vulnerability patterns (shared across workers in-process) */
+/** Cached learned vulnerability patterns (shared across workers in-process, session-local) */
 let learnedPatterns: string[] = [];
 let patternsLoadedAt = 0;
-const PATTERNS_TTL_MS = 60_000; // refresh every 60s per ROLES.md §Safeguard diary cache
+const PATTERNS_TTL_MS = 60_000; // refresh every 60s
 
 /** Reset the in-process pattern cache — for testing only. */
 export function _resetPatternCacheForTesting(): void {
@@ -102,14 +100,12 @@ export function _resetPatternCacheForTesting(): void {
 export class SafeguardWorker {
   private workerId: string;
   private provider: GroqProvider;
-  private palace: MemPalaceClient;
   private kg: KnowledgeGraph;
   private rulesetCacheTtlMs: number;
 
-  constructor(workerId: string, groqApiKey?: string, rulesetCacheTtlMs = 300_000, palaceUrl?: string, kgPath?: string) {
+  constructor(workerId: string, groqApiKey?: string, rulesetCacheTtlMs = 300_000, kgPath?: string) {
     this.workerId = workerId;
     this.provider = new GroqProvider(groqApiKey);
-    this.palace = new MemPalaceClient(palaceUrl);
     this.kg = new KnowledgeGraph(kgPath);
     this.rulesetCacheTtlMs = rulesetCacheTtlMs;
   }
@@ -119,48 +115,20 @@ export class SafeguardWorker {
   }
 
   /**
-   * Load learned vulnerability patterns from MemPalace diary.
-   * Per ROLES.md §Safeguard: reads wing_safeguard diary before each scan,
-   * refreshed every 60s to pick up patterns learned by other workers/sessions.
+   * Return in-process learned vulnerability patterns.
+   * Session-local only — patterns are not persisted across restarts.
    */
-  private async loadLearnedPatterns(): Promise<string[]> {
-    const now = Date.now();
-    if (now - patternsLoadedAt < PATTERNS_TTL_MS) {
-      return learnedPatterns;
-    }
-    try {
-      const diary = await this.palace.diaryRead('wing_safeguard', 20);
-      learnedPatterns = diary
-        .filter((e) => e.content.startsWith('vuln-pattern:'))
-        .map((e) => e.content.slice('vuln-pattern:'.length).trim());
-      patternsLoadedAt = now;
-    } catch {
-      // non-fatal — proceed with existing patterns
-    }
+  private loadLearnedPatterns(): string[] {
     return learnedPatterns;
   }
 
   /**
-   * Persist a newly discovered vulnerability pattern to wing_safeguard/hall_facts.
-   * Per ROLES.md §Safeguard: pattern persisted as Drawer so next session reloads it.
+   * Add a newly discovered vulnerability pattern to the in-process cache.
+   * Session-local only.
    */
-  private async persistPattern(rule: string, detail: string): Promise<void> {
+  private cachePattern(rule: string, detail: string): void {
     const patternKey = `vuln-pattern:${rule}: ${detail}`;
-    try {
-      await this.palace.addDrawer(
-        'wing_safeguard',
-        'hall_facts',
-        `vuln-${rule}-${Date.now()}`,
-        JSON.stringify({ rule, detail, discovered_at: new Date().toISOString() }),
-        `vulnerability pattern ${rule}`,
-      );
-      // Also write to diary for fast TTL-based reload
-      await this.palace.diaryWrite('wing_safeguard', patternKey);
-      // Invalidate in-process cache so next scan picks up new patterns
-      patternsLoadedAt = 0;
-    } catch (err) {
-      console.warn(`[SafeguardWorker:${this.workerId}] Pattern persist failed: ${String(err)}`);
-    }
+    learnedPatterns.push(patternKey);
   }
 
   async scan(diff: string): Promise<ScanResult> {
@@ -185,8 +153,8 @@ export class SafeguardWorker {
       return { approved: false, violations, lockdown };
     }
 
-    // Load learned patterns from prior sessions
-    const knownPatterns = await this.loadLearnedPatterns();
+    // Load learned patterns from prior scans (in-process cache)
+    const knownPatterns = this.loadLearnedPatterns();
 
     // LLM-based semantic check for subtler issues
     const newViolations: ScanResult['violations'] = [];
@@ -203,10 +171,10 @@ export class SafeguardWorker {
       console.warn(`[SafeguardWorker:${this.workerId}] LLM scan failed (static rules still apply): ${String(err)}`);
     }
 
-    // Persist newly discovered patterns for future sessions
+    // Cache newly discovered patterns for this session
     for (const v of newViolations) {
       if (v.severity === 'critical' || v.severity === 'high') {
-        void this.persistPattern(v.rule, v.detail);
+        this.cachePattern(v.rule, v.detail);
       }
     }
 
@@ -308,7 +276,6 @@ export class SafeguardPool {
         `safeguard_${i}`,
         config.groqApiKey,
         config.rulesetCacheTtlMs,
-        config.palaceUrl,
         config.kgPath,
       ),
     );

@@ -10,11 +10,9 @@
 //
 // Outputs:
 //   - RefineryAnalysis with root-cause + recommended approach
-//   - Writes architectural decision to hall_facts (permanent team truth)
 //   - Writes KG triple (subject=task_type, relation=architectural_decision, object=approach_id)
 
 import { GroqProvider } from '../groq/provider.js';
-import { MemPalaceClient } from '../mempalace/client.js';
 import { KnowledgeGraph } from '../kg/index.js';
 import type { InferenceParams } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -23,7 +21,6 @@ export interface RefineryConfig {
   agentId: string;
   rigName: string;
   groqApiKey?: string;
-  palaceUrl?: string;
   kgPath?: string;
 }
 
@@ -52,44 +49,26 @@ export class Refinery {
   private agentId: string;
   private rigName: string;
   private provider: GroqProvider;
-  private palace: MemPalaceClient;
   private kg: KnowledgeGraph;
 
   constructor(config: RefineryConfig) {
     this.agentId = config.agentId;
     this.rigName = config.rigName;
     this.provider = new GroqProvider(config.groqApiKey);
-    this.palace = new MemPalaceClient(config.palaceUrl);
     this.kg = new KnowledgeGraph(config.kgPath);
   }
 
   /**
    * Deep analysis of a failed task.
-   * Per ROLES.md §Refinery: reads hall_facts for prior architectural decisions
-   * on this task type before reasoning, then writes findings back.
+   * Per ROLES.md §Refinery: uses high-capability model for root-cause analysis,
+   * then writes findings as a KG triple for query-ability by Mayor.
    */
   async analyze(
     taskDescription: string,
     taskType: string,
     failure: FailureContext,
   ): Promise<RefineryAnalysis> {
-    // 1. Read prior architectural decisions from palace for context
-    let priorContext = '';
-    try {
-      const prior = await this.palace.search(
-        taskType,
-        `wing_rig_${this.rigName}`,
-        'hall_facts',
-      );
-      if (prior.results.length > 0) {
-        priorContext = `\nPrior architectural decisions for '${taskType}':\n` +
-          prior.results.slice(0, 3).map((r) => r.content.slice(0, 300)).join('\n---\n');
-      }
-    } catch {
-      // non-fatal — proceed without prior context
-    }
-
-    // 2. Run high-capability inference
+    // Run high-capability inference
     const params: InferenceParams = {
       role: 'mayor',   // groq/compound is the mayor model
       task_type: 'refinery_analysis',
@@ -116,7 +95,6 @@ Be concrete and actionable. The recommended_approach must be specific enough to 
             `Rejection reason: ${failure.witnessReason}`,
             failure.diff ? `Rejected diff (truncated):\n${failure.diff.slice(0, 3000)}` : '',
             failure.errorDetail ? `Error detail:\n${failure.errorDetail.slice(0, 1000)}` : '',
-            priorContext,
           ].filter(Boolean).join('\n\n'),
         },
       ],
@@ -146,7 +124,7 @@ Be concrete and actionable. The recommended_approach must be specific enough to 
       createdAt: new Date().toISOString(),
     };
 
-    // 3. Persist as a permanent hall_facts entry (architectural decision)
+    // Write KG triple for routing decisions to be query-able by Mayor
     await this.persistAnalysis(analysis, taskDescription);
 
     return analysis;
@@ -158,23 +136,6 @@ Be concrete and actionable. The recommended_approach must be specific enough to 
   ): Promise<void> {
     const today = new Date().toISOString().slice(0, 10);
 
-    // Write to hall_facts — permanent team truth
-    try {
-      await this.palace.addDrawer(
-        `wing_rig_${this.rigName}`,
-        'hall_facts',
-        `refinery_${analysis.id}`,
-        JSON.stringify({
-          ...analysis,
-          task_description: taskDescription.slice(0, 200),
-        }),
-        `architectural decision ${analysis.taskType} ${analysis.confidenceLevel}`,
-      );
-    } catch (err) {
-      console.warn(`[Refinery:${this.agentId}] Failed to write hall_facts: ${String(err)}`);
-    }
-
-    // Write KG triple for routing decisions to be query-able by Mayor
     try {
       this.kg.addTriple({
         subject: analysis.taskType,
@@ -186,6 +147,7 @@ Be concrete and actionable. The recommended_approach must be specific enough to 
           class: 'advisory',
           confidence: analysis.confidenceLevel,
           approach: analysis.recommendedApproach.slice(0, 200),
+          task_description: taskDescription.slice(0, 200),
         },
         created_at: new Date().toISOString(),
       });
