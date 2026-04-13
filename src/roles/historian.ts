@@ -3,6 +3,8 @@
 import { Ledger } from '../ledger/index.js';
 import { KnowledgeGraph } from '../kg/index.js';
 import { GroqProvider } from '../groq/provider.js';
+import { GroqBatchClient } from '../groq/batch.js';
+import type { BatchRequest } from '../groq/batch.js';
 import { detectStackFamily } from '../swarm/tools.js';
 import type { Bead, InferenceParams, PlaybookEntry } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -130,7 +132,11 @@ export class Historian {
 
     if (eligible.length === 0) return;
 
-    const playbookResults = await this.generatePlaybooksSequential(eligible);
+    // P10: Use batch API for 2+ eligible task types (50% cost reduction for 70B synthesis).
+    // Single eligible type uses sequential path (batch overhead not worth it for 1 request).
+    const playbookResults = eligible.length >= 2
+      ? await this.generatePlaybooksBatch(eligible)
+      : await this.generatePlaybooksSequential(eligible);
 
     // Detect dominant stack family for this rig
     const rigStack = detectStackFamily(beads);
@@ -162,7 +168,7 @@ export class Historian {
     }
   }
 
-  /** Sequential (real-time) playbook generation */
+  /** Sequential (real-time) playbook generation — used for single eligible task type */
   private async generatePlaybooksSequential(
     eligible: Array<{ taskType: string; stats: { success: number; fail: number; models: Map<string, number> }; successRate: number; bestModel: string; samples: (string | undefined)[] }>,
   ): Promise<Array<{ ctx: (typeof eligible)[number]; playbook: PlaybookEntry | null }>> {
@@ -172,6 +178,70 @@ export class Historian {
       results.push({ ctx, playbook });
     }
     return results;
+  }
+
+  /**
+   * P10: Batch playbook generation via Groq Batch API.
+   * Used when there are 2+ eligible task types — 50% cost reduction vs sequential 70B calls.
+   * Falls back to returning null playbooks on batch failure (non-fatal).
+   */
+  private async generatePlaybooksBatch(
+    eligible: Array<{ taskType: string; stats: { success: number; fail: number; models: Map<string, number> }; successRate: number; bestModel: string; samples: (string | undefined)[] }>,
+  ): Promise<Array<{ ctx: (typeof eligible)[number]; playbook: PlaybookEntry | null }>> {
+    const client = new GroqBatchClient(this.provider.apiKey);
+
+    const requests: BatchRequest[] = eligible.map((ctx) => ({
+      custom_id: ctx.taskType,
+      method: 'POST' as const,
+      url: '/v1/chat/completions' as const,
+      body: {
+        model: 'llama-3.3-70b-versatile', // 70B for playbook quality
+        messages: [
+          {
+            role: 'system',
+            content: 'Generate a concise playbook for a task type. Output JSON: { "title": string, "steps": [string], "tips": [string] }',
+          },
+          {
+            role: 'user',
+            content: `Task type: ${ctx.taskType}\nBest model: ${ctx.bestModel}\nExample tasks:\n${ctx.samples.join('\n')}`,
+          },
+        ],
+        temperature: 0.3,
+      },
+    }));
+
+    try {
+      const jobId = await client.createBatch(requests);
+      console.log(`[Historian:${this.agentId}] Batch playbook job created: ${jobId}`);
+      const results = await client.pollBatch(jobId);
+
+      return eligible.map((ctx) => {
+        const result = results.find((r) => r.custom_id === ctx.taskType);
+        if (!result || result.error || !result.response?.body?.choices?.[0]) {
+          return { ctx, playbook: null };
+        }
+        try {
+          const raw = result.response.body.choices[0].message.content;
+          const parsed = JSON.parse(raw) as { title?: string; steps?: string[] };
+          return {
+            ctx,
+            playbook: {
+              id: uuidv4().slice(0, 8),
+              title: String(parsed.title ?? ctx.taskType),
+              task_type: ctx.taskType,
+              steps: Array.isArray(parsed.steps) ? parsed.steps.map(String) : [],
+              model_hint: ctx.bestModel,
+              created_at: new Date().toISOString(),
+            },
+          };
+        } catch {
+          return { ctx, playbook: null };
+        }
+      });
+    } catch (err) {
+      console.warn(`[Historian:${this.agentId}] Batch playbook job failed: ${String(err)} — returning null results`);
+      return eligible.map((ctx) => ({ ctx, playbook: null }));
+    }
   }
 
   private async generatePlaybook(
