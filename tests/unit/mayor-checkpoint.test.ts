@@ -219,3 +219,102 @@ describe('Mayor outage queue (RESILIENCE.md §Convoy Queueing)', () => {
     expect(count).toBe(0);
   });
 });
+
+describe('Mayor CoVe self-critique pass (P8)', () => {
+  let mayor: Mayor;
+
+  beforeEach(() => {
+    mayor = new Mayor({
+      agentId: 'mayor_ckpt',
+      rigName: 'cove-rig',
+      kgPath: TEST_DB,
+    });
+  });
+
+  afterEach(() => {
+    mayor.close();
+    jest.restoreAllMocks();
+  });
+
+  it('CoVe adds a missing dependency edge when second call returns a correction', async () => {
+    // First call (decompose): two beads, B does NOT list A as a need
+    const decomposeResult = JSON.stringify({
+      beads: [
+        { task_type: 'setup', task_description: 'Step A', role: 'polecat', needs: [], critical_path: false, witness_required: false, fan_out_weight: 1 },
+        { task_type: 'deploy', task_description: 'Step B (should need A)', role: 'polecat', needs: [], critical_path: false, witness_required: false, fan_out_weight: 1 },
+      ],
+    });
+
+    jest.spyOn(GroqProvider.prototype, 'executeInference')
+      .mockImplementation(async (params) => {
+        if (params.task_type === 'decompose') {
+          return decomposeResult;
+        }
+        // CoVe call: extract bead IDs from the plan JSON embedded in user message
+        const userContent = params.messages.find((m) => m.role === 'user')?.content ?? '';
+        const ids = [...userContent.matchAll(/"id":\s*"([^"]+)"/g)].map((m) => m[1]);
+        // Add a missing edge: bead[1] should depend on bead[0]
+        return JSON.stringify({
+          corrections: [{ bead_id: ids[1], add_needs: [ids[0]] }],
+        });
+      });
+
+    const plan = await mayor.orchestrate({ description: 'Two-step deploy task' });
+    expect(plan.beads).toHaveLength(2);
+
+    // bead[1] should now have bead[0] in its needs list
+    const beadA = plan.beads[0];
+    const beadB = plan.beads[1];
+    expect(beadB.needs).toContain(beadA.bead_id);
+  });
+
+  it('CoVe failure is non-fatal — original plan is returned', async () => {
+    jest.spyOn(GroqProvider.prototype, 'executeInference')
+      .mockImplementation(async (params) => {
+        if (params.task_type === 'decompose') {
+          return FAKE_DECOMPOSE_RESULT; // 2 beads, no needs
+        }
+        throw new Error('Groq rate limit');
+      });
+
+    const plan = await mayor.orchestrate({ description: 'Task where CoVe fails' });
+    // Should still get the original plan intact
+    expect(plan.beads).toHaveLength(2);
+    for (const bead of plan.beads) {
+      expect(bead.needs).toEqual([]);
+    }
+  });
+
+  it('CoVe correction that introduces a cycle is discarded — original plan returned', async () => {
+    // First call: bead A depends on B (A.needs = [B.id])
+    // CoVe then tries to add B.needs = [A.id], creating a cycle
+    let beadAId = '';
+    let beadBId = '';
+
+    jest.spyOn(GroqProvider.prototype, 'executeInference')
+      .mockImplementation(async (params) => {
+        if (params.task_type === 'decompose') {
+          return FAKE_DECOMPOSE_RESULT; // 2 beads, both needs=[]
+        }
+        // CoVe call: capture both IDs and propose a mutual dependency (cycle)
+        const userContent = params.messages.find((m) => m.role === 'user')?.content ?? '';
+        const ids = [...userContent.matchAll(/"id":\s*"([^"]+)"/g)].map((m) => m[1]);
+        beadAId = ids[0];
+        beadBId = ids[1];
+        // A needs B AND B needs A → cycle
+        return JSON.stringify({
+          corrections: [
+            { bead_id: beadAId, add_needs: [beadBId] },
+            { bead_id: beadBId, add_needs: [beadAId] },
+          ],
+        });
+      });
+
+    const plan = await mayor.orchestrate({ description: 'Cycle-inducing CoVe task' });
+    // Cycle should be detected and CoVe corrections discarded; original has no needs
+    expect(plan.beads).toHaveLength(2);
+    for (const bead of plan.beads) {
+      expect(bead.needs).toEqual([]);
+    }
+  });
+});

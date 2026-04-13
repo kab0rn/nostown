@@ -269,13 +269,20 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
           dependentCount.set(dep, (dependentCount.get(dep) ?? 0) + 1);
         }
       }
-      return tempBeads.map((bead) => ({
+      let finalBeads = tempBeads.map((bead) => ({
         ...bead,
         fan_out_weight: Math.max(
           bead.fan_out_weight,
           dependentCount.get(bead.bead_id) ?? 0,
         ),
       }));
+
+      // P8: CoVe self-critique — only for multi-bead plans (no deps to check in single-bead)
+      if (finalBeads.length > 1) {
+        finalBeads = await this.covePass(finalBeads, task);
+      }
+
+      return finalBeads;
     } catch (err) {
       console.error(`[Mayor:${this.agentId}] Decomposition failed: ${String(err)}`);
       // Fallback: single bead
@@ -291,6 +298,73 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
         rig: this.rigName,
         status: 'pending',
       })];
+    }
+  }
+
+  /**
+   * P8: Chain-of-Verification (CoVe) self-critique pass.
+   * Makes a focused second Groq call to check for missing dependency edges only.
+   * Failures are non-fatal — returns the original plan on any error.
+   * CoVe corrections that introduce cycles are silently discarded.
+   */
+  private async covePass(beads: Bead[], task: Task): Promise<Bead[]> {
+    const plan = beads.map((b) => ({
+      id: b.bead_id,
+      type: b.task_type,
+      desc: b.task_description,
+      needs: b.needs,
+    }));
+
+    const params: InferenceParams = {
+      role: 'mayor',
+      task_type: 'cove_review',
+      messages: [
+        {
+          role: 'system',
+          content: `You are reviewing a bead plan for missing dependency edges.
+Output JSON: { "corrections": [ { "bead_id": string, "add_needs": [string] } ] }
+Only add missing edges — do NOT change descriptions or remove beads.
+Output empty corrections array if the plan is correct.`,
+        },
+        {
+          role: 'user',
+          content: `Original goal: ${task.description}\n\nPlan:\n${JSON.stringify(plan, null, 2)}`,
+        },
+      ],
+      temperature: 0.0,
+      response_format: { type: 'json_object' },
+    };
+
+    try {
+      const raw = await this.provider.executeInference(params);
+      const parsed = JSON.parse(raw) as { corrections?: Array<{ bead_id: string; add_needs: string[] }> };
+      const corrections = parsed.corrections ?? [];
+
+      if (corrections.length === 0) return beads;
+
+      // Apply corrections — only add needs that reference valid bead IDs
+      const beadMap = new Map(beads.map((b) => [b.bead_id, { ...b }]));
+      for (const c of corrections) {
+        const bead = beadMap.get(c.bead_id);
+        if (bead && Array.isArray(c.add_needs)) {
+          bead.needs = [...new Set([...bead.needs, ...c.add_needs.filter((id) => beadMap.has(id))])];
+          beadMap.set(bead.bead_id, bead);
+        }
+      }
+
+      // Re-run cycle detection after CoVe corrections
+      const updated = [...beadMap.values()];
+      const cycleNodes = detectCycles(updated);
+      if (cycleNodes.length > 0) {
+        console.warn(`[Mayor:${this.agentId}] CoVe introduced a cycle (${cycleNodes.join(' → ')}) — discarding corrections`);
+        return beads;
+      }
+
+      return updated;
+    } catch (err) {
+      // CoVe is best-effort — don't block dispatch on failure
+      console.warn(`[Mayor:${this.agentId}] CoVe pass failed: ${String(err)} — proceeding with original plan`);
+      return beads;
     }
   }
 
