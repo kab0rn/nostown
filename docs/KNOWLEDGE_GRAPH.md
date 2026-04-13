@@ -1,6 +1,6 @@
 # NOS Town Knowledge Graph — SQLite Triple Store
 
-The NOS Town Knowledge Graph (KG) is a temporal SQLite triple store at `palace-db/knowledge_graph.sqlite`. It is the authoritative source for model routing state, Witness council votes, architectural decisions, and team assignments across all NOS Town sessions. No external memory server is required — agents access the KG directly via `src/kg/`.
+The NOS Town Knowledge Graph (KG) is a temporal SQLite triple store at `kg/knowledge_graph.sqlite`. It is the authoritative source for model routing state, Witness council votes, architectural decisions, and team assignments across all NOS Town sessions. No external memory server is required — agents access the KG directly via `src/kg/`.
 
 ---
 
@@ -17,7 +17,7 @@ NOS Town's routing and orchestration decisions are not static — they evolve as
 
 ## SQLite Schema
 
-The KG lives at `palace-db/knowledge_graph.sqlite`. Schema:
+The KG lives at `kg/knowledge_graph.sqlite`. Schema:
 
 ```sql
 CREATE TABLE triples (
@@ -251,7 +251,7 @@ Guardrails:
 - **Triples never deleted:** Once written, triples are permanent (append-only). Invalidation sets `valid_to` but does not delete the row. This provides a complete audit trail.
 - **PII filter:** The Historian's nightly pipeline runs a PII-stripping pass before writing any code-content or description fields to the KG. Only task types, model IDs, and room names are stored — never raw code or credential patterns.
 - **Cross-rig isolation:** Triples for different Rig wings are namespaced by rig prefix in `subject`/`object`. A query for `rig_tcgliveassist` does not return results for `rig_openclaw` unless a Tunnel explicitly links them.
-- **SQLite file location:** `palace-db/knowledge_graph.sqlite`. Back this up before schema migrations.
+- **SQLite file location:** `kg/knowledge_graph.sqlite`. Back this up before schema migrations.
 
 ---
 

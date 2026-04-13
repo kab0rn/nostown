@@ -33,7 +33,7 @@ async function handleMcpTool(
 
   switch (tool) {
     case 'historian_append':
-      // MemPalace removed — historian_append is a no-op; use KG write instead if needed
+      // historian_append: write outcome to KG for Historian mining
       if (ctx.kg) {
         kgInsert(ctx.kg, {
           subject: String(args['beadId'] ?? event.beadId),

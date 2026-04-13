@@ -7,7 +7,7 @@ import fs from 'fs';
 import type { KGTriple, TripleClass } from '../types/index.js';
 import { ROLE_PRECEDENCE } from '../types/index.js';
 
-const DB_PATH = path.resolve(process.env.NOS_PALACE_DB ?? 'palace-db/knowledge_graph.sqlite');
+const DEFAULT_KG_PATH = 'kg/knowledge_graph.sqlite';
 
 function ensureDir(filePath: string): void {
   const dir = path.dirname(filePath);
@@ -18,7 +18,8 @@ export class KnowledgeGraph {
   private db: Database.Database;
 
   constructor(dbPath?: string) {
-    const resolvedPath = dbPath ?? DB_PATH;
+    // Evaluate env var lazily so tests can set NOS_KG_PATH in beforeAll
+    const resolvedPath = dbPath ?? path.resolve(process.env.NOS_KG_PATH ?? DEFAULT_KG_PATH);
     ensureDir(resolvedPath);
     this.db = new Database(resolvedPath);
     this.initialize();
@@ -198,6 +199,61 @@ export class KnowledgeGraph {
     `).run({ validTo, metadata: JSON.stringify(meta), id });
 
     return true;
+  }
+
+  /**
+   * Find the most recent playbook triple for a task type on a rig.
+   * Returns metadata or null if no active playbook exists.
+   */
+  queryPlaybook(
+    taskType: string,
+    rigName: string,
+    asOf?: string,
+  ): { playbookId: string; successRate: number; sampleSize: number; modelHint?: string; stack?: string } | null {
+    const date = asOf ?? new Date().toISOString().slice(0, 10);
+    const subject = `rig_${rigName}`;
+    const objectPrefix = `playbook_${taskType}_`;
+
+    const rows = this.db.prepare(`
+      SELECT * FROM triples
+      WHERE subject = @subject
+        AND relation = 'has_playbook'
+        AND object LIKE @objectPrefix
+        AND valid_from <= @date
+        AND (valid_to IS NULL OR valid_to > @date)
+      ORDER BY valid_from DESC, created_at DESC
+      LIMIT 1
+    `).all({ subject, objectPrefix: objectPrefix + '%', date }) as Array<Record<string, unknown>>;
+
+    if (rows.length === 0) return null;
+
+    const row = rows[0];
+    const meta = row.metadata ? JSON.parse(row.metadata as string) as Record<string, unknown> : {};
+
+    return {
+      playbookId: row.object as string,
+      successRate: typeof meta.success_rate === 'number' ? meta.success_rate : 0,
+      sampleSize: typeof meta.sample_size === 'number' ? meta.sample_size : 0,
+      modelHint: typeof meta.model_hint === 'string' ? meta.model_hint : undefined,
+      stack: typeof meta.stack === 'string' ? meta.stack : undefined,
+    };
+  }
+
+  /**
+   * Returns true if any active Safeguard lockdown triple exists.
+   * Used by RoutingDispatcher.isPlaybookFresh() to block playbook use during lockdown.
+   */
+  hasActiveLockdown(asOf?: string): boolean {
+    const date = asOf ?? new Date().toISOString().slice(0, 10);
+    const row = this.db.prepare(`
+      SELECT 1 FROM triples
+      WHERE subject LIKE 'lockdown_%'
+        AND relation = 'triggered_by'
+        AND valid_from <= @date
+        AND (valid_to IS NULL OR valid_to > @date)
+      LIMIT 1
+    `).get({ date });
+    return row !== undefined;
   }
 
   /**

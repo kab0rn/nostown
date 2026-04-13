@@ -1,6 +1,6 @@
 // Tests: Mayor generates a local checkpoint ID before dispatch (#8)
 // Tests that orchestrate() produces a checkpoint_id and attaches it to all beads.
-// MemPalace has been removed; checkpoints are local UUIDs (ckpt_<12hex>).
+// Checkpoints are ephemeral local UUIDs (ckpt_<12hex>), not persisted to the KG.
 
 import * as os from 'os';
 import * as path from 'path';
@@ -16,6 +16,7 @@ const TEST_DB = path.join(os.tmpdir(), `nos-ckpt-kg-${Date.now()}.sqlite`);
 beforeAll(async () => {
   process.env.NOS_ROLE_KEY_DIR = TEST_KEY_DIR;
   process.env.NOS_RIGS_ROOT = TEST_RIGS_ROOT;
+  process.env.NOS_KG_PATH = TEST_DB;
   fs.mkdirSync(TEST_KEY_DIR, { recursive: true });
   fs.mkdirSync(TEST_RIGS_ROOT, { recursive: true });
   await generateKeyPair('mayor_ckpt');

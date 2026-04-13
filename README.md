@@ -13,7 +13,7 @@ NOS Town coordinates swarms of AI coding agents running on Groq's LPU™ archite
 
 Memory is provided by two persistence layers:
 - **Ledger** — append-only JSONL bead log (`rigs/<rig>/beads/current.jsonl`)
-- **Knowledge Graph** — SQLite triple store (`palace-db/knowledge_graph.sqlite`)
+- **Knowledge Graph** — SQLite triple store (`kg/knowledge_graph.sqlite`)
 
 ---
 
@@ -66,7 +66,7 @@ NOS Town will refuse to start without it.
 | `NOS_HOOKS_DIR` | `hooks/` | Directory scanned for `.hook` JSON event files. |
 | `NOS_AUDIT_DIR` | `nos/audit/` | Append-only audit log directory for sensitive operations. |
 | `NOS_QUARANTINE_DIR` | `nos/quarantine/` | Quarantine directory for convoy signature failures. |
-| `NOS_PALACE_DB` | `palace-db/knowledge_graph.sqlite` | Knowledge graph SQLite path. |
+| `NOS_KG_PATH` | `kg/knowledge_graph.sqlite` | Knowledge graph SQLite path. |
 | `OLLAMA_URL` | — | Optional. Base URL for local Ollama (e.g. `http://localhost:11434`). Enables Tier B fallback after 60 s of Groq failures. |
 | `HISTORIAN_CRON` | `0 2 * * *` | Cron schedule for the Historian nightly pipeline. |
 
@@ -177,7 +177,7 @@ nostown/
 ├── keys/                       # Ed25519 key pairs (auto-created by generateKeyPair)
 ├── rigs/                       # Per-project rig directories (auto-created by Ledger)
 │   └── <rig-name>/beads/current.jsonl
-├── palace-db/                  # Knowledge graph SQLite (auto-created on first run)
+├── kg/                         # Knowledge graph SQLite (auto-created on first run)
 ├── hooks/                      # .hook event files (optional)
 ├── docs/                       # Specification documents
 └── tests/
@@ -269,7 +269,7 @@ NOS Town
 │   ├── Playbook synthesis (70B batch)       ← Golden path reasoning
 │   └── Routing KG updates                   ← Model promotions/demotions as triples
 │
-└── Knowledge Graph (palace-db/knowledge_graph.sqlite)
+└── Knowledge Graph (kg/knowledge_graph.sqlite)        ← NOS_KG_PATH
     ├── Model routing locks                   ← locked_to / demoted_from triples
     ├── Witness council votes                 ← approved / rejected triples
     ├── Architectural decisions               ← Refinery analysis triples

@@ -35,7 +35,7 @@ The single source of truth for all system actions. Every agent writes to the led
 
 ### 2. The Knowledge Graph
 
-Model routing decisions, Witness council votes, and architectural choices are stored as temporal triples in `palace-db/knowledge_graph.sqlite`. This is the live, queryable source of truth for routing decisions.
+Model routing decisions, Witness council votes, and architectural choices are stored as temporal triples in `kg/knowledge_graph.sqlite`. This is the live, queryable source of truth for routing decisions.
 
 ---
 

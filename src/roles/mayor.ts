@@ -75,7 +75,7 @@ export class Mayor {
    * Returns true if an orphan workflow was found and adopted.
    *
    * Reads the Ledger directly for in-progress/pending beads.
-   * MemPalace has been removed; orphan detection is ledger-only.
+   * Orphan detection is ledger-only; no external memory server required.
    */
   async startup(): Promise<boolean> {
     let orphanFound = false;
@@ -92,7 +92,7 @@ export class Mayor {
         'MAYOR_ADOPTION',
         this.agentId,
         'ledger-recovery',
-        `Adopted ${inProgress.length} orphan bead(s) from ledger; palace removed`,
+        `Adopted ${inProgress.length} orphan bead(s) from ledger; ledger-only recovery`,
       );
       this.lastHeartbeatAt = new Date();
       orphanFound = true;
@@ -150,26 +150,44 @@ export class Mayor {
       }
     }
 
-    // 1. Decompose task into beads (no palace context — KG routing still applies)
-    const beads = await this.decompose(task, '', '', undefined);
+    // 1. Query KG for playbook (ROUTING.md §Playbook Freshness Guard)
+    const taskType = task.task_type ?? 'execute';
+    const playbookMeta = this.kg.queryPlaybook(taskType, this.rigName);
+    let activePlaybook: PlaybookEntry | undefined;
+    let playbookHint = '';
 
-    // 2. DEPENDENCY_CYCLE guard — topological sort (SWARM.md §1: MUST reject cycles)
+    if (playbookMeta && this.router.isPlaybookFresh(playbookMeta.successRate, playbookMeta.sampleSize, taskType)) {
+      activePlaybook = {
+        id: playbookMeta.playbookId,
+        title: playbookMeta.playbookId,
+        task_type: taskType,
+        steps: [],
+        model_hint: playbookMeta.modelHint ?? '',
+        created_at: new Date().toISOString(),
+      };
+      playbookHint = `Use playbook ${playbookMeta.playbookId} (success rate: ${(playbookMeta.successRate * 100).toFixed(0)}%)`;
+    }
+
+    // 2. Decompose task into beads
+    const beads = await this.decompose(task, '', playbookHint, activePlaybook);
+
+    // 3. DEPENDENCY_CYCLE guard — topological sort (SWARM.md §1: MUST reject cycles)
     const cycleNodes = detectCycles(beads);
     if (cycleNodes.length > 0) {
       throw new Error(`DEPENDENCY_CYCLE detected in bead plan: ${cycleNodes.join(' → ')}`);
     }
 
-    // 3. Generate ephemeral checkpoint UUID (no palace — checkpoint is local only)
+    // 4. Generate ephemeral checkpoint UUID (local only, not persisted to KG)
     const checkpointId = `ckpt_${uuidv4().slice(0, 12)}`;
 
-    // 4. Attach checkpoint ID to all beads
+    // 5. Attach checkpoint ID to all beads
     const planId = `plan_${uuidv4().slice(0, 8)}`;
     const beadsWithCheckpoint = beads.map((b) => ({
       ...b,
       plan_checkpoint_id: checkpointId,
     }));
 
-    // 5. Write beads to ledger
+    // 6. Write beads to ledger
     for (const bead of beadsWithCheckpoint) {
       await this.ledger.appendBead(this.rigName, bead);
     }

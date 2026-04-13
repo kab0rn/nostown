@@ -31,7 +31,7 @@ For an interactive session (like this one), run `nt` with no arguments.
 | KG | `src/kg/` | Knowledge graph for model routing |
 | Ledger | `src/ledger/` | JSONL bead log (persistence layer) |
 
-Memory: Agent memory is provided by the Ledger (`rigs/{rig}/beads/current.jsonl`) and the Knowledge Graph (`palace-db/knowledge_graph.sqlite`). No external memory server is required.
+Memory: Agent memory is provided by the Ledger (`rigs/{rig}/beads/current.jsonl`) and the Knowledge Graph (`kg/knowledge_graph.sqlite`). No external server required — all persistence is local SQLite and JSONL.
 
 Full architecture docs: `docs/`
 

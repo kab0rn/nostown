@@ -112,7 +112,7 @@ func cmdStatus() {
 
 	agentID := envOrDefault("NOS_AGENT_ID", "mayor_01")
 	rig := envOrDefault("NOS_RIG", "default")
-	kgPath := envOrDefault("NOS_PALACE_DB", "palace-db/knowledge_graph.sqlite")
+	kgPath := envOrDefault("NOS_KG_PATH", "kg/knowledge_graph.sqlite")
 
 	fmt.Printf("NOS Town Status\n")
 	fmt.Printf("    Mayor       %s\n", agentID)
@@ -131,7 +131,7 @@ func cmdPrime() {
 
 	agentID := envOrDefault("NOS_AGENT_ID", "mayor_01")
 	rig := envOrDefault("NOS_RIG", "default")
-	kgPath := envOrDefault("NOS_PALACE_DB", "palace-db/knowledge_graph.sqlite")
+	kgPath := envOrDefault("NOS_KG_PATH", "kg/knowledge_graph.sqlite")
 
 	fmt.Printf(`# NOS Town Context
 
@@ -246,6 +246,6 @@ Environment:
   NOS_HOME                NOS Town project root (set by install-nt.sh)
   NOS_AGENT_ID            Mayor agent ID (default: mayor_01)
   NOS_RIG                 Active rig name (default: default)
-  NOS_PALACE_DB           KG SQLite path (default: palace-db/knowledge_graph.sqlite)
+  NOS_KG_PATH             KG SQLite path (default: kg/knowledge_graph.sqlite)
 `)
 }

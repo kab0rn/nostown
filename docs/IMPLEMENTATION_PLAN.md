@@ -726,12 +726,11 @@ Add `NOS_SAFEGUARD_RULES` to `.env.example` as an optional override path.
 
 ### CLAUDE.md updates
 
-Two stale references:
+Both stale references resolved:
 
-**1.** `CLAUDE.md` line: `npm test # Run all 572 tests` → `npm test # Run all tests`  
-(Test count changes too frequently to hardcode; remove the count.)
+**1.** ✅ `CLAUDE.md` test count hardcode removed.
 
-**2.** `CLAUDE.md` Development section: Remove `nt up # Start MemPalace` — this command no longer exists.
+**2.** ✅ `nt up # Start MemPalace` removed — command no longer exists.
 
 ### Remove dead `patternsLoadedAt` state
 

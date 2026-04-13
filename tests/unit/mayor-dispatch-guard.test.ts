@@ -11,7 +11,14 @@ import type { Bead } from '../../src/types/index';
 
 const TEST_KEY_DIR = path.join(os.tmpdir(), `nos-mayor-keys-${Date.now()}`);
 const TEST_RIGS_ROOT = path.join(os.tmpdir(), `nos-mayor-rigs-${Date.now()}`);
-const TEST_DB = path.join(os.tmpdir(), `nos-mayor-kg-${Date.now()}.sqlite`);
+const kgFiles: string[] = [];
+
+function freshKg(): string {
+  const p = path.join(os.tmpdir(), `nos-mayor-kg-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+  kgFiles.push(p);
+  process.env.NOS_KG_PATH = p;
+  return p;
+}
 
 beforeAll(async () => {
   process.env.NOS_ROLE_KEY_DIR = TEST_KEY_DIR;
@@ -24,7 +31,7 @@ beforeAll(async () => {
 afterAll(() => {
   fs.rmSync(TEST_KEY_DIR, { recursive: true, force: true });
   fs.rmSync(TEST_RIGS_ROOT, { recursive: true, force: true });
-  fs.rmSync(TEST_DB, { force: true });
+  for (const f of kgFiles) fs.rmSync(f, { force: true });
 });
 
 function makeBead(overrides: Partial<Bead> = {}): Bead {
@@ -42,10 +49,11 @@ describe('Mayor dispatch guard', () => {
   let bus: ConvoyBus;
 
   beforeEach(() => {
+    const kg = freshKg();
     mayor = new Mayor({
       agentId: 'mayor_test',
       rigName: 'test-rig',
-      kgPath: TEST_DB,
+      kgPath: kg,
     });
     bus = new ConvoyBus('test-rig');
   });
@@ -70,7 +78,7 @@ describe('Mayor dispatch guard', () => {
     const noKeyMayor = new Mayor({
       agentId: 'mayor_no_key_exists',
       rigName: 'test-rig',
-      kgPath: TEST_DB,
+      kgPath: freshKg(),
     });
     const bead = makeBead({ plan_checkpoint_id: 'ckpt-valid-123' });
     // Checkpoint guard is passed (checkpoint present), so it should throw about missing key
@@ -114,6 +122,8 @@ describe('Mayor dispatch guard', () => {
 });
 
 describe('ConvoyBus BEAD_DISPATCH checkpoint guard', () => {
+  beforeEach(() => { freshKg(); });
+
   // The bus itself must reject BEAD_DISPATCH convoys missing plan_checkpoint_id
   it('bus.send rejects BEAD_DISPATCH without plan_checkpoint_id', async () => {
     const bus = new ConvoyBus('test-rig-bus');
@@ -170,7 +180,7 @@ describe('Mayor CoVe — fan_out_weight and critical_path annotation', () => {
       });
     });
 
-    const testMayor = new Mayor({ agentId: 'mayor_test', rigName: 'cove-rig', kgPath: TEST_DB });
+    const testMayor = new Mayor({ agentId: 'mayor_test', rigName: 'cove-rig', kgPath: freshKg() });
 
     // Override decompose to return a known bead set with a real root ID
     const { Ledger: LedgerCls } = await import('../../src/ledger/index');

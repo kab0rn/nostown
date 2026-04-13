@@ -55,6 +55,9 @@ export class Historian {
     // 4. Record rig wing in KG for future cross-rig discovery
     await this.recordRigWing(rigName);
 
+    // 5. Write AAAK manifest as KG triple (HARDENING.md checklist #21)
+    await this.recordAaakManifest(rigName, beads);
+
     console.log(`[Historian:${this.agentId}] Nightly run complete`);
   }
 
@@ -119,7 +122,7 @@ export class Historian {
       const samples = beads
         .filter((b) => b.task_type === taskType && b.outcome === 'SUCCESS')
         .slice(-3)
-        .map((b) => b.task_description)
+        .map((b) => b.task_description ? this.stripPii(b.task_description) : undefined)
         .filter(Boolean);
 
       eligible.push({ taskType, stats, successRate, bestModel, samples });
@@ -137,13 +140,21 @@ export class Historian {
       const { taskType, stats, successRate } = ctx;
 
       const today = new Date().toISOString().slice(0, 10);
+      const total = ctx.stats.success + ctx.stats.fail;
       this.kg.addTriple({
         subject: `rig_${rigName}`,
         relation: 'has_playbook',
         object: `playbook_${taskType}_${playbook.id}`,
         valid_from: today,
         agent_id: this.agentId,
-        metadata: { class: 'advisory', task_type: taskType, success_rate: successRate, stack: rigStack },
+        metadata: {
+          class: 'advisory',
+          task_type: taskType,
+          success_rate: successRate,
+          sample_size: total,
+          model_hint: ctx.bestModel,
+          stack: rigStack,
+        },
         created_at: new Date().toISOString(),
       });
 
@@ -413,6 +424,29 @@ export class Historian {
     ].join('\n');
 
     return header + lines.join('\n');
+  }
+
+  /**
+   * Write AAAK bead manifest as a KG triple for Mayor context loading.
+   * Per HARDENING.md checklist #21.
+   */
+  private async recordAaakManifest(rigName: string, beads: Bead[]): Promise<void> {
+    const manifest = this.generateAaakManifest(beads);
+    const today = new Date().toISOString().slice(0, 10);
+
+    this.kg.addTriple({
+      subject: `rig_${rigName}`,
+      relation: 'aaak_manifest',
+      object: `aaak_${rigName}_${today}`,
+      valid_from: today,
+      agent_id: this.agentId,
+      metadata: {
+        class: 'advisory',
+        manifest,
+        bead_count: beads.length,
+      },
+      created_at: new Date().toISOString(),
+    });
   }
 
   close(): void {

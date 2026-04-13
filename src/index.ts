@@ -4,6 +4,8 @@ import { Mayor } from './roles/mayor.js';
 import { HeartbeatMonitor } from './monitor/heartbeat.js';
 import { runFromStdin } from './swarm/bridge.js';
 import * as readline from 'readline';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { HeartbeatEvent } from './types/index.js';
 
 const AGENT_ID = process.env.NOS_AGENT_ID ?? 'mayor_01';
@@ -14,6 +16,15 @@ function checkEnv(): void {
   if (!GROQ_API_KEY) {
     console.error('[NOS Town] ERROR: GROQ_API_KEY environment variable is required');
     console.error('  Set it in .env or export GROQ_API_KEY=gsk_...');
+    process.exit(1);
+  }
+
+  // HARDENING.md §3.1: fail fast if sender key is missing
+  const keyDir = process.env.NOS_ROLE_KEY_DIR ?? 'keys';
+  const keyFile = path.resolve(keyDir, `${AGENT_ID}.key`);
+  if (!fs.existsSync(keyFile)) {
+    console.error(`[NOS Town] ERROR: No sender key found at ${keyFile}`);
+    console.error(`  Run: npx tsx scripts/gen-keys.ts --agent ${AGENT_ID}`);
     process.exit(1);
   }
 }

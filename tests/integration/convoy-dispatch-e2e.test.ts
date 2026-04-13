@@ -47,8 +47,15 @@ jest.mock('groq-sdk', () => ({
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 const TEST_RIGS = path.join(os.tmpdir(), `convoy-e2e-rigs-${Date.now()}`);
-const TEST_KG = path.join(os.tmpdir(), `convoy-e2e-kg-${Date.now()}.sqlite`);
 const KEYS_DIR = path.join(TEST_RIGS, 'keys');
+const kgFiles: string[] = [];
+
+function freshKg(): string {
+  const p = path.join(os.tmpdir(), `convoy-e2e-kg-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+  kgFiles.push(p);
+  process.env.NOS_KG_PATH = p;
+  return p;
+}
 
 function makePendingBead(rig: string, deps: string[] = []): Bead {
   return Ledger.createBead({
@@ -81,9 +88,10 @@ beforeAll(async () => {
 
 afterAll(() => {
   fs.rmSync(TEST_RIGS, { recursive: true, force: true });
-  fs.rmSync(TEST_KG, { force: true });
+  for (const f of kgFiles) fs.rmSync(f, { force: true });
   delete process.env.NOS_RIGS_ROOT;
   delete process.env.NOS_ROLE_KEY_DIR;
+  delete process.env.NOS_KG_PATH;
 });
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -95,7 +103,7 @@ describe('Mayor → ConvoyBus dispatch round-trip (production message flow)', ()
       agentId: 'mayor',
       rigName: rig,
       groqApiKey: 'test-key',
-      kgPath: TEST_KG,
+      kgPath: freshKg(),
     });
     const bus = new ConvoyBus(rig);
     const bead = makePendingBead(rig);
@@ -117,7 +125,7 @@ describe('Mayor → ConvoyBus dispatch round-trip (production message flow)', ()
       agentId: 'mayor',
       rigName: rig,
       groqApiKey: 'test-key',
-      kgPath: TEST_KG,
+      kgPath: freshKg(),
     });
     const bus = new ConvoyBus(rig);
     const bead = makePendingBead(rig);
@@ -147,7 +155,7 @@ describe('Mayor → ConvoyBus dispatch round-trip (production message flow)', ()
       agentId: 'mayor',
       rigName: rig,
       groqApiKey: 'test-key',
-      kgPath: TEST_KG,
+      kgPath: freshKg(),
     });
     const bus = new ConvoyBus(rig);
 
@@ -188,7 +196,7 @@ describe('Mayor → ConvoyBus dispatch round-trip (production message flow)', ()
       agentId: 'mayor',
       rigName: rig,
       groqApiKey: 'test-key',
-      kgPath: TEST_KG,
+      kgPath: freshKg(),
     });
     const bus = new ConvoyBus(rig);
 
@@ -212,7 +220,7 @@ describe('Mayor → ConvoyBus dispatch round-trip (production message flow)', ()
       agentId: 'mayor',
       rigName: rig,
       groqApiKey: 'test-key',
-      kgPath: TEST_KG,
+      kgPath: freshKg(),
       emitHeartbeat: (evt) => { cascadeEvents.push(evt.type); },
     });
     const bus = new ConvoyBus(rig);
@@ -262,7 +270,7 @@ describe('Mayor → ConvoyBus dispatch round-trip (production message flow)', ()
       agentId: 'mayor',
       rigName: rig,
       groqApiKey: 'test-key',
-      kgPath: TEST_KG,
+      kgPath: freshKg(),
     });
     const bus = new ConvoyBus(rig);
 
@@ -290,7 +298,7 @@ describe('Mayor → ConvoyBus dispatch round-trip (production message flow)', ()
       agentId: 'mayor',
       rigName: rig,
       groqApiKey: 'test-key',
-      kgPath: TEST_KG,
+      kgPath: freshKg(),
     });
     const bus = new ConvoyBus(rig);
     const bead = makePendingBead(rig);

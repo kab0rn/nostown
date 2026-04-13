@@ -1,5 +1,5 @@
 // Tests: Mayor playbook → routing lock
-// With MemPalace removed, playbook routing requires explicit PlaybookEntry injection.
+// Playbook routing requires explicit PlaybookEntry injection into the KG.
 // These tests verify: KG routing lock, complexity-based fallback (no playbook).
 
 jest.mock('groq-sdk', () => {
@@ -110,5 +110,124 @@ describe('Mayor routing lock via RoutingDispatcher', () => {
 
     const secBead = plan.beads.find((b) => b.task_type === 'security');
     expect(secBead?.model).toBe('llama-3.3-70b-versatile');
+  });
+
+  it('uses playbook model hint when playbook is fresh (>90%, ≥20 samples)', async () => {
+    const { KnowledgeGraph } = await import('../../src/kg/index');
+    const kgFresh = new KnowledgeGraph(TEST_DB);
+    const today = new Date().toISOString().slice(0, 10);
+
+    kgFresh.addTriple({
+      subject: 'rig_rl-test-rig',
+      relation: 'has_playbook',
+      object: 'playbook_execute_pb_fresh01',
+      valid_from: today,
+      agent_id: 'historian',
+      metadata: { class: 'advisory', success_rate: 0.95, sample_size: 25, model_hint: 'llama-3.3-70b-versatile' },
+      created_at: new Date().toISOString(),
+    });
+    kgFresh.close();
+
+    getMock().mockResolvedValue({
+      choices: [{ message: { content: makeDecomposeResult('execute', 'polecat') } }],
+    });
+
+    const plan = await mayor.orchestrate({ description: 'Execute task', task_type: 'execute' });
+
+    const bead = plan.beads.find((b) => b.task_type === 'execute');
+    expect(bead?.model).toBe('llama-3.3-70b-versatile');
+  });
+
+  it('ignores playbook when success_rate <= 0.90', async () => {
+    const { KnowledgeGraph } = await import('../../src/kg/index');
+    const kgLow = new KnowledgeGraph(TEST_DB);
+    const today = new Date().toISOString().slice(0, 10);
+
+    kgLow.addTriple({
+      subject: 'rig_rl-test-rig',
+      relation: 'has_playbook',
+      object: 'playbook_feature_pb_low01',
+      valid_from: today,
+      agent_id: 'historian',
+      metadata: { class: 'advisory', success_rate: 0.85, sample_size: 30, model_hint: 'llama-3.3-70b-versatile' },
+      created_at: new Date().toISOString(),
+    });
+    kgLow.close();
+
+    getMock().mockResolvedValue({
+      choices: [{ message: { content: makeDecomposeResult('feature', 'polecat') } }],
+    });
+
+    const plan = await mayor.orchestrate({ description: 'Feature task', task_type: 'feature' });
+
+    // Playbook ignored — complexity routing used (feature = medium → llama-4-scout)
+    const bead = plan.beads.find((b) => b.task_type === 'feature');
+    expect(bead?.model).not.toBe('llama-3.3-70b-versatile');
+  });
+
+  it('ignores playbook when sample_size < 20', async () => {
+    const { KnowledgeGraph } = await import('../../src/kg/index');
+    const kgSmall = new KnowledgeGraph(TEST_DB);
+    const today = new Date().toISOString().slice(0, 10);
+
+    kgSmall.addTriple({
+      subject: 'rig_rl-test-rig',
+      relation: 'has_playbook',
+      object: 'playbook_refactor_pb_small01',
+      valid_from: today,
+      agent_id: 'historian',
+      metadata: { class: 'advisory', success_rate: 0.95, sample_size: 10, model_hint: 'llama-3.3-70b-versatile' },
+      created_at: new Date().toISOString(),
+    });
+    kgSmall.close();
+
+    getMock().mockResolvedValue({
+      choices: [{ message: { content: makeDecomposeResult('refactor', 'polecat') } }],
+    });
+
+    const plan = await mayor.orchestrate({ description: 'Refactor task', task_type: 'refactor' });
+
+    // Playbook ignored — complexity routing used
+    const bead = plan.beads.find((b) => b.task_type === 'refactor');
+    expect(bead?.model).not.toBe('llama-3.3-70b-versatile');
+  });
+
+  it('ignores playbook when active Safeguard lockdown exists', async () => {
+    const { KnowledgeGraph } = await import('../../src/kg/index');
+    const kgLock = new KnowledgeGraph(TEST_DB);
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Write a fresh playbook that would otherwise qualify
+    kgLock.addTriple({
+      subject: 'rig_rl-test-rig',
+      relation: 'has_playbook',
+      object: 'playbook_execute_pb_lockdown01',
+      valid_from: today,
+      agent_id: 'historian',
+      metadata: { class: 'advisory', success_rate: 0.97, sample_size: 50, model_hint: 'llama-3.3-70b-versatile' },
+      created_at: new Date().toISOString(),
+    });
+
+    // Write an active lockdown
+    kgLock.addTriple({
+      subject: 'lockdown_test0001',
+      relation: 'triggered_by',
+      object: 'eval_usage',
+      valid_from: today,
+      agent_id: 'safeguard_0',
+      metadata: { class: 'advisory', violations: [{ rule: 'eval_usage', detail: 'test' }] },
+      created_at: new Date().toISOString(),
+    });
+    kgLock.close();
+
+    getMock().mockResolvedValue({
+      choices: [{ message: { content: makeDecomposeResult('execute', 'polecat') } }],
+    });
+
+    const plan = await mayor.orchestrate({ description: 'Execute during lockdown', task_type: 'execute' });
+
+    // Playbook should be ignored due to lockdown
+    const bead = plan.beads.find((b) => b.task_type === 'execute');
+    expect(bead?.model).not.toBe('llama-3.3-70b-versatile');
   });
 });

@@ -7,6 +7,8 @@ import { KnowledgeGraph } from '../kg/index.js';
 import type { ScanResult, InferenceParams } from '../types/index.js';
 import { safeguardQueueDepth, safeguardScanLatencyMs } from '../telemetry/metrics.js';
 import { v4 as uuidv4 } from 'uuid';
+import fs from 'fs';
+import path from 'path';
 
 export interface SafeguardConfig {
   poolSize?: number;    // minimum 2
@@ -21,6 +23,10 @@ interface SecurityRule {
   severity: 'critical' | 'high' | 'medium';
   pattern: RegExp;
   description: string;
+}
+
+function getRulesFile(): string {
+  return process.env.NOS_SAFEGUARD_RULES ?? 'src/hardening/safeguard-rules.jsonl';
 }
 
 // Static ruleset — cache-shared across all pool workers
@@ -82,7 +88,25 @@ function getOrLoadRules(ttlMs: number): SecurityRule[] {
   if (rulesetCache && now - rulesetCache.loadedAt < ttlMs) {
     return rulesetCache.rules;
   }
-  rulesetCache = { rules: BUILTIN_RULES, loadedAt: now };
+
+  const rulesFile = getRulesFile();
+  let rules = BUILTIN_RULES;
+  try {
+    if (fs.existsSync(rulesFile)) {
+      rules = fs.readFileSync(rulesFile, 'utf8')
+        .split('\n')
+        .filter((l) => l.trim())
+        .map((l) => {
+          const r = JSON.parse(l) as { id: string; name: string; severity: string; pattern: string; flags?: string; description: string };
+          return { ...r, severity: r.severity as SecurityRule['severity'], pattern: new RegExp(r.pattern, r.flags ?? '') };
+        });
+    }
+  } catch (err) {
+    console.warn(`[Safeguard] Failed to load rules from ${rulesFile}: ${String(err)} — using built-ins`);
+    rules = BUILTIN_RULES;
+  }
+
+  rulesetCache = { rules, loadedAt: now };
   return rulesetCache.rules;
 }
 
@@ -92,6 +116,11 @@ let learnedPatterns: string[] = [];
 /** Reset the in-process pattern cache — for testing only. */
 export function _resetPatternCacheForTesting(): void {
   learnedPatterns = [];
+}
+
+/** Reset the ruleset cache — for testing only. */
+export function _resetRulesetCacheForTesting(): void {
+  rulesetCache = null;
 }
 
 export class SafeguardWorker {

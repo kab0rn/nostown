@@ -41,7 +41,7 @@ nos/
 │       ├── .hook       # Gas Town hook file (schema compat)
 │       └── beads/
 │           └── current.jsonl  # Per-rig bead ledger
-├── palace-db/
+├── kg/
 │   └── knowledge_graph.sqlite  # KG triple store
 └── docs/               # This documentation
 ```
@@ -65,7 +65,7 @@ NOS Town maintains 1:1 compatibility with Gas Town's `.hook` file schema and `be
 
 | NOS Town Addition | Where it lives | Purpose |
 |---|---|---|
-| Knowledge Graph | `palace-db/knowledge_graph.sqlite` | KG-backed routing, temporal triples, audit history |
+| Knowledge Graph | `kg/knowledge_graph.sqlite` | KG-backed routing, temporal triples, audit history |
 | Historian batch job | `src/historian/` | Nightly mining of beads into Playbooks |
 | Safeguard sentry | `src/safeguard/` | Real-time security layer (pooled workers) |
 | Mailboxes | `src/convoys/` | Async inter-agent message bus |
@@ -153,7 +153,7 @@ Test each agent in isolation by mocking the Groq SDK:
 jest.mock('groq-sdk');
 ```
 
-No MemPalace sidecar is required. All persistence is via the Ledger (JSONL) and Knowledge Graph (SQLite), both of which can be initialized in-process for tests using `tmp` directories.
+No external server is required. All persistence is via the Ledger (JSONL) and Knowledge Graph (SQLite), both of which can be initialized in-process for tests using `tmp` directories.
 
 ### Integration tests
 

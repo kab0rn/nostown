@@ -1,6 +1,6 @@
 // Tests for Safeguard vulnerability pattern in-process cache learning
 // Per ROLES.md §Safeguard: workers cache detected patterns in-process
-// (session-local only — no cross-session persistence after MemPalace removal).
+// Pattern cache is session-local; cross-session persistence uses KG triples.
 
 import { jest } from '@jest/globals';
 
@@ -13,14 +13,31 @@ jest.mock('../../src/groq/provider.js', () => ({
   })),
 }));
 
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
 // Import after mocking — also need to reset the module-level cache
-import { SafeguardWorker, _resetPatternCacheForTesting } from '../../src/roles/safeguard.js';
+import { SafeguardWorker, _resetPatternCacheForTesting, _resetRulesetCacheForTesting } from '../../src/roles/safeguard.js';
+
+const originalRulesEnv = process.env.NOS_SAFEGUARD_RULES;
 
 beforeEach(() => {
   mockExecuteInference.mockReset();
 
   // Reset in-process pattern cache so each test starts fresh
   _resetPatternCacheForTesting();
+  _resetRulesetCacheForTesting();
+});
+
+afterEach(() => {
+  // Restore env var
+  if (originalRulesEnv === undefined) {
+    delete process.env.NOS_SAFEGUARD_RULES;
+  } else {
+    process.env.NOS_SAFEGUARD_RULES = originalRulesEnv;
+  }
+  _resetRulesetCacheForTesting();
 });
 
 const CLEAN_RESPONSE = JSON.stringify({ violations: [] });
@@ -114,6 +131,55 @@ describe('SafeguardWorker — pattern learning', () => {
     // Static rules still apply; LLM failure is non-fatal
     expect(result.approved).toBe(true);
     expect(result.violations).toHaveLength(0);
+  });
+
+  describe('JSONL rule loading (P12)', () => {
+    test('loads rules from NOS_SAFEGUARD_RULES file when set', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'safeguard-test-'));
+      const rulesFile = path.join(tmpDir, 'custom-rules.jsonl');
+
+      // Write a single custom rule
+      fs.writeFileSync(rulesFile, JSON.stringify({
+        id: 'custom_exec',
+        name: 'Custom exec check',
+        severity: 'critical',
+        pattern: 'customDangerousExec\\(',
+        description: 'Custom dangerous exec call',
+      }) + '\n');
+
+      process.env.NOS_SAFEGUARD_RULES = rulesFile;
+
+      mockExecuteInference.mockResolvedValue(CLEAN_RESPONSE);
+
+      const worker = new SafeguardWorker('test_jsonl_1');
+      const result = await worker.scan('customDangerousExec(userInput)');
+
+      // Custom rule should have triggered a critical violation
+      expect(result.approved).toBe(false);
+      expect(result.violations.some((v) => v.rule === 'custom_exec')).toBe(true);
+      expect(result.lockdown?.triggered).toBe(true);
+
+      fs.rmSync(tmpDir, { recursive: true });
+    });
+
+    test('falls back to built-in rules when JSONL file is malformed', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'safeguard-test-'));
+      const rulesFile = path.join(tmpDir, 'bad-rules.jsonl');
+
+      fs.writeFileSync(rulesFile, 'NOT VALID JSON\n');
+      process.env.NOS_SAFEGUARD_RULES = rulesFile;
+
+      mockExecuteInference.mockResolvedValue(CLEAN_RESPONSE);
+
+      const worker = new SafeguardWorker('test_jsonl_2');
+      // Built-in rule: eval() should still be detected
+      const result = await worker.scan('eval("dangerous code")');
+
+      expect(result.approved).toBe(false);
+      expect(result.violations.some((v) => v.rule === 'eval_usage')).toBe(true);
+
+      fs.rmSync(tmpDir, { recursive: true });
+    });
   });
 
   test('_resetPatternCacheForTesting clears the cache between tests', async () => {

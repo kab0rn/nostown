@@ -50,7 +50,7 @@ Upstream uses a single Witness. NOS Town implements a **Council Mode** (3+ paral
 
 ### 3. The Historian + Knowledge Graph
 
-Upstream has no persistent "Institutional Memory." NOS Town's Historian mines successful patterns into Playbooks stored as KG triples (queryable, temporally-versioned) rather than flat markdown files. The KG at `palace-db/knowledge_graph.sqlite` is the authoritative source for routing state, council votes, and architectural decisions across all sessions.
+Upstream has no persistent "Institutional Memory." NOS Town's Historian mines successful patterns into Playbooks stored as KG triples (queryable, temporally-versioned) rather than flat markdown files. The KG at `kg/knowledge_graph.sqlite` is the authoritative source for routing state, council votes, and architectural decisions across all sessions.
 
 There is no external memory server or MCP sidecar — all persistence is in-process via `src/kg/` (SQLite) and the Ledger (JSONL).
 

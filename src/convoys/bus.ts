@@ -7,6 +7,7 @@ import { loadPublicKey } from './sign.js';
 import { validateConvoy } from './verify.js';
 import { auditLog } from '../hardening/audit.js';
 import { convoyDeliveryFailure, convoyAuthzDenied } from '../telemetry/metrics.js';
+import { KnowledgeGraph } from '../kg/index.js';
 
 const QUARANTINE_DIR = process.env.NOS_QUARANTINE_DIR ?? 'nos/quarantine';
 
@@ -31,13 +32,44 @@ export class ConvoyBus {
   private transportSecret?: string;
   /**
    * In-memory sequence counter per sender to enforce monotonicity.
-   * Per-instance to avoid cross-test pollution.
+   * Restored from KG on construction (P3: HARDENING.md §3.2 — counters never reset).
    */
   private seqCounters = new Map<string, number>();
+  private kg: KnowledgeGraph;
 
-  constructor(rigName: string, transportSecret?: string) {
+  constructor(rigName: string, transportSecret?: string, kg?: KnowledgeGraph) {
     this.rigName = rigName;
     this.transportSecret = transportSecret ?? process.env.NOS_CONVOY_SECRET;
+    this.kg = kg ?? new KnowledgeGraph();
+    this.restoreSeqCounters();
+  }
+
+  /**
+   * Restore seq counters from KG on startup so restarts don't reset sequence numbers.
+   * Per HARDENING.md §3.2: "Sequence counters are never reset."
+   */
+  private restoreSeqCounters(): void {
+    try {
+      const triples = this.kg.queryTriples('convoy_seq', undefined, 'last_seq');
+      for (const t of triples) {
+        // object format: '{senderId}:{seq}'
+        const colonIdx = t.object.lastIndexOf(':');
+        if (colonIdx > 0) {
+          const senderId = t.object.slice(0, colonIdx);
+          const seq = Number(t.object.slice(colonIdx + 1));
+          if (senderId && !isNaN(seq)) {
+            this.seqCounters.set(senderId, seq);
+          }
+        }
+      }
+    } catch {
+      // KG unavailable at startup — fall back to in-memory only
+    }
+  }
+
+  /** For testing: inject a pre-built KnowledgeGraph */
+  static withKg(rigName: string, kg: KnowledgeGraph, transportSecret?: string): ConvoyBus {
+    return new ConvoyBus(rigName, transportSecret, kg);
   }
 
   /**
@@ -82,6 +114,28 @@ export class ConvoyBus {
       );
     }
     this.seqCounters.set(sender_id, seq);
+
+    // Persist seq to KG so it survives process restarts (HARDENING.md §3.2)
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+      // Supersede the previous triple for this sender before writing new one
+      const existing = this.kg.queryTriples('convoy_seq', undefined, 'last_seq')
+        .filter((t) => t.object.startsWith(`${sender_id}:`));
+      for (const t of existing) {
+        this.kg.invalidateTriple(t.id!, today, 'superseded by new seq');
+      }
+      this.kg.addTriple({
+        subject: 'convoy_seq',
+        relation: 'last_seq',
+        object: `${sender_id}:${seq}`,
+        valid_from: today,
+        agent_id: sender_id,
+        metadata: { class: 'advisory' },
+        created_at: new Date().toISOString(),
+      });
+    } catch {
+      // KG write failure is non-fatal — seq is still enforced in-memory this session
+    }
 
     // MAYOR_CHECKPOINT_MISSING guard (HARDENING.md §1.2.1, CONVOYS.md §4)
     if (convoy.payload.type === 'BEAD_DISPATCH') {

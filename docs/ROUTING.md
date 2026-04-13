@@ -6,7 +6,7 @@ Model routing strategies and escalation patterns for the NOS Town multi-agent sy
 
 ## Overview
 
-NOS Town employs a dynamic, data-driven routing architecture. Instead of a single frontier model, tasks are routed through an escalation ladder designed to minimize cost while maximizing output quality. The routing table is continuously refined by the **Historian** based on empirical Bead success rates — stored as temporal KG triples in `palace-db/knowledge_graph.sqlite`.
+NOS Town employs a dynamic, data-driven routing architecture. Instead of a single frontier model, tasks are routed through an escalation ladder designed to minimize cost while maximizing output quality. The routing table is continuously refined by the **Historian** based on empirical Bead success rates — stored as temporal KG triples in `kg/knowledge_graph.sqlite`.
 
 ---
 
