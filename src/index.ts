@@ -3,10 +3,12 @@
 import { Mayor } from './roles/mayor.js';
 import { WorkerRuntime } from './runtime/worker-loop.js';
 import { HeartbeatMonitor } from './monitor/heartbeat.js';
+import { Historian } from './roles/historian.js';
 import { runFromStdin } from './swarm/bridge.js';
 import * as readline from 'readline';
 import * as fs from 'fs';
 import * as path from 'path';
+import cron from 'node-cron';
 import type { HeartbeatEvent } from './types/index.js';
 
 const AGENT_ID = process.env.NOS_AGENT_ID ?? 'mayor_01';
@@ -148,6 +150,21 @@ async function main(): Promise<void> {
   mayor.startHeartbeat();
   await runtime.start();
 
+  // Wire Historian cron job (HISTORIAN_CRON env var, default: 2am nightly)
+  const historianCron = process.env.HISTORIAN_CRON ?? '0 2 * * *';
+  const historian = new Historian({
+    agentId: 'historian_01',
+    groqApiKey: GROQ_API_KEY,
+  });
+  let historianTask: cron.ScheduledTask | null = null;
+  if (cron.validate(historianCron)) {
+    historianTask = cron.schedule(historianCron, () => {
+      void historian.runNightly(RIG_NAME);
+    });
+  } else {
+    console.warn(`[NOS Town] Invalid HISTORIAN_CRON schedule: "${historianCron}" — historian disabled`);
+  }
+
   try {
     if (first === '--interactive' || first === '-i') {
       // Launched by `nt` (no args) via the nt binary
@@ -165,6 +182,11 @@ async function main(): Promise<void> {
         console.error('Direct swarm mode not yet implemented. Use --stdin-params.');
         process.exit(1);
       }
+    } else if (first === 'historian') {
+      // One-shot Historian run: `nt historian` or `nos historian`
+      const rigArg = args[1] ?? RIG_NAME;
+      console.log(`[NOS Town] Running Historian nightly pipeline for rig: ${rigArg}`);
+      await historian.runNightly(rigArg);
     } else if (first === 'task') {
       // Legacy compatibility: `nos task <description>`
       const description = args.slice(1).join(' ');
@@ -183,6 +205,7 @@ async function main(): Promise<void> {
       showHelp();
     }
   } finally {
+    historianTask?.stop();
     await runtime.stop();
     mayor.stopHeartbeat();
     monitor.stop();

@@ -38,6 +38,14 @@ func main() {
 		cmdStatus()
 	case "prime":
 		cmdPrime()
+	case "historian":
+		// One-shot Historian run: nt historian [rig]
+		nosHome := mustFindNosHome()
+		arg := "historian"
+		if len(args) > 1 {
+			arg = "historian " + strings.Join(args[1:], " ")
+		}
+		launchNode(nosHome, arg)
 	case "help", "--help", "-h":
 		printHelp()
 	case "version", "--version", "-v":
@@ -234,12 +242,14 @@ Usage:
   nt <task>               Orchestrate any task — plain text, no syntax
   nt status               Show service health
   nt prime                Print session context
+  nt historian [rig]      Run the Historian nightly pipeline once
 
 Examples:
   nt add rate limiting to the polecat dispatch loop
   nt fix the convoy signature verification
   nt refactor the KG query cache to use LRU eviction
   nt what models are in the routing table?
+  nt historian            Mine playbooks and update KG routing
 
 Environment:
   GROQ_API_KEY            Required — Groq Cloud API key
@@ -247,5 +257,6 @@ Environment:
   NOS_AGENT_ID            Mayor agent ID (default: mayor_01)
   NOS_RIG                 Active rig name (default: default)
   NOS_KG_PATH             KG SQLite path (default: kg/knowledge_graph.sqlite)
+  HISTORIAN_CRON          Cron schedule for Historian (default: 0 2 * * *)
 `)
 }
