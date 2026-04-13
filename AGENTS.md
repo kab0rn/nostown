@@ -1,59 +1,40 @@
-# NOS Town
+# Agent Instructions
 
-Run `nt prime` for full session context after compaction, clear, or new session.
+This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
 
-## Startup
-
-Run `nt status` to confirm the rig and agent ID are loaded.
-
-## Interaction model
-
-Just type what you want — no command syntax required:
+## Quick Reference
 
 ```bash
-nt add rate limiting to the polecat dispatch loop
-nt fix the convoy signature check
-nt refactor the KG query cache
-nt status
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --claim  # Claim work atomically
+bd close <id>         # Complete work
+bd dolt push          # Push beads data to remote
 ```
 
-The `nt` binary routes plain text directly to the Mayor for orchestration.
-For an interactive session (like this one), run `nt` with no arguments.
+## Non-Interactive Shell Commands
 
-## Architecture
+**ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
 
-| Component | Location | Role |
-|---|---|---|
-| Mayor | `src/roles/mayor.ts` | Orchestrator — decomposes tasks into beads |
-| Polecats | `src/roles/polecat.ts` | Workers — execute beads |
-| Witnesses | `src/roles/witness.ts` | Reviewers — score completions |
-| Convoys | `src/convoys/` | Signed message bus |
-| KG | `src/kg/` | Knowledge graph for model routing |
-| Ledger | `src/ledger/` | JSONL bead log (persistence layer) |
+Shell commands like `cp`, `mv`, and `rm` may be aliased to include `-i` (interactive) mode on some systems, causing the agent to hang indefinitely waiting for y/n input.
 
-Memory: Agent memory is provided by the Ledger (`rigs/{rig}/beads/current.jsonl`) and the Knowledge Graph (`palace-db/knowledge_graph.sqlite`). No external memory server is required.
-
-Full architecture docs: `docs/`
-
-## Development
-
+**Use these forms instead:**
 ```bash
-npm test              # Run all tests
-npm run typecheck     # TypeScript check
+# Force overwrite without prompting
+cp -f source dest           # NOT: cp source dest
+mv -f source dest           # NOT: mv source dest
+rm -f file                  # NOT: rm file
+
+# For recursive operations
+rm -rf directory            # NOT: rm -r directory
+cp -rf source dest          # NOT: cp -r source dest
 ```
 
-**Note:** `nt up` no longer exists — no server to start. All persistence is local SQLite + JSONL.
-
-## Dolt / beads
-
-NOS Town uses `bd` (beads) for issue tracking. Run `bd prime` for context.
-
-## Session close
-
-Before ending a session:
-1. `npm test` — all tests must pass
-2. `git push` — push to origin
-
+**Other commands that may prompt:**
+- `scp` - use `-o BatchMode=yes` for non-interactive
+- `ssh` - use `-o BatchMode=yes` to fail instead of prompting
+- `apt-get` - use `-y` flag
+- `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker
