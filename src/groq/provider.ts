@@ -55,7 +55,7 @@ const OLLAMA_ACTIVATION_THRESHOLD_MS = 60_000;
 
 export class GroqProvider {
   private client: Groq;
-  private readonly apiKey: string;
+  readonly apiKey: string;
   private emitHeartbeat: HeartbeatEmitter | null;
   private readonly circuitBreaker: CircuitBreaker;
   /** Timestamp when the current Groq outage started (null = no outage) */

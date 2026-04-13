@@ -28,7 +28,7 @@ export interface KgTraverseResult {
 
 /**
  * kg_query — return active triples for a subject, optionally filtered by relation.
- * Mirrors KNOWLEDGE_GRAPH.md `mempalace_kg_query`.
+ * Mirrors KNOWLEDGE_GRAPH.md `kg_query`.
  */
 export function kgQuery(kg: KnowledgeGraph, params: KgQueryParams): KGTriple[] {
   const today = new Date().toISOString().slice(0, 10);
@@ -43,7 +43,7 @@ export function kgQuery(kg: KnowledgeGraph, params: KgQueryParams): KGTriple[] {
 
 /**
  * kg_insert — add a triple to the KG.
- * Mirrors KNOWLEDGE_GRAPH.md `mempalace_kg_add`.
+ * Mirrors KNOWLEDGE_GRAPH.md `kg_add`.
  */
 export function kgInsert(kg: KnowledgeGraph, params: KgInsertParams): void {
   const today = new Date().toISOString().slice(0, 10);
@@ -99,7 +99,7 @@ export function kgTraverse(
 
 /**
  * kg_invalidate — mark a triple as no longer active.
- * Mirrors KNOWLEDGE_GRAPH.md `mempalace_kg_invalidate`.
+ * Mirrors KNOWLEDGE_GRAPH.md `kg_invalidate`.
  */
 export function kgInvalidate(
   kg: KnowledgeGraph,
@@ -112,7 +112,7 @@ export function kgInvalidate(
 
 /**
  * kg_timeline — full history of triples for a subject.
- * Mirrors KNOWLEDGE_GRAPH.md `mempalace_kg_timeline`.
+ * Mirrors KNOWLEDGE_GRAPH.md `kg_timeline`.
  */
 export function kgTimeline(kg: KnowledgeGraph, subject: string): KGTriple[] {
   return kg.getTimeline(subject);

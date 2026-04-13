@@ -13,7 +13,6 @@ import * as fs from 'fs';
 import { swarmRebalanceLimits, DEFAULT_IN_FLIGHT_LIMITS } from '../../src/swarm/tools';
 import type { InFlightLimits } from '../../src/swarm/tools';
 import { Ledger } from '../../src/ledger/index';
-import { MemPalaceClient } from '../../src/mempalace/client';
 import { Mayor } from '../../src/roles/mayor';
 import { generateKeyPair } from '../../src/convoys/sign';
 import type { Bead } from '../../src/types/index';
@@ -103,19 +102,6 @@ describe('Mayor orchestrate() uses dynamic rebalance limits (SWARM.md §3)', () 
       kgPath: TEST_DB,
     });
 
-    jest.spyOn(MemPalaceClient.prototype, 'getStatus').mockResolvedValue({
-      hash: 'abc',
-      wing_count: 0,
-      room_count: 0,
-      drawer_count: 0,
-    } as never);
-    jest.spyOn(MemPalaceClient.prototype, 'wakeup').mockResolvedValue({ l0: '', l1: '' } as never);
-    jest.spyOn(MemPalaceClient.prototype, 'search').mockResolvedValue({ results: [], total: 0 });
-    jest.spyOn(MemPalaceClient.prototype, 'getTunnels').mockResolvedValue([]);
-    jest.spyOn(MemPalaceClient.prototype, 'diaryRead').mockResolvedValue([]);
-    jest.spyOn(MemPalaceClient.prototype, 'saveCheckpoint').mockResolvedValue({ id: 'ckpt-dynlim' } as never);
-    jest.spyOn(MemPalaceClient.prototype, 'addDrawer').mockResolvedValue({ id: 'ok' });
-    jest.spyOn(MemPalaceClient.prototype, 'diaryWrite').mockResolvedValue({ id: 1 });
   });
 
   afterEach(() => {

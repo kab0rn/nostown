@@ -46,7 +46,7 @@ The Mayor MAY escalate before 15 minutes if:
 To prevent overwhelming the system, the Mayor enforces in-flight limits:
 - **Max In-Flight Polecat Beads**: 50
 - **Max In-Flight Witness Beads**: 20
-- Before decomposing a new goal, the Mayor calls `mempalace_kg_query("active_beads_count")`. If limits are exceeded, the Mayor enters a `WAITING_FOR_CAPACITY` state.
+- Before decomposing a new goal, the Mayor calls `kgQuery({ subject: "active_beads_count" })`. If limits are exceeded, the Mayor enters a `WAITING_FOR_CAPACITY` state.
 - Queue draining is dependency-aware: critical-path and high-fan-out predecessor beads are drained before low-impact standalone work.
 
 ---

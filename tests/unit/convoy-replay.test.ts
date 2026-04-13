@@ -9,10 +9,12 @@ import type { ConvoyHeader, ConvoyPayload } from '../../src/types/index';
 
 const TEST_KEY_DIR = path.join(os.tmpdir(), `nos-replay-keys-${Date.now()}`);
 const TEST_RIGS_ROOT = path.join(os.tmpdir(), `nos-replay-rigs-${Date.now()}`);
+const TEST_KG = path.join(os.tmpdir(), `nos-replay-kg-${Date.now()}.sqlite`);
 
 beforeAll(async () => {
   process.env.NOS_ROLE_KEY_DIR = TEST_KEY_DIR;
   process.env.NOS_RIGS_ROOT = TEST_RIGS_ROOT;
+  process.env.NOS_KG_PATH = TEST_KG;
   fs.mkdirSync(TEST_KEY_DIR, { recursive: true });
   await generateKeyPair('mayor_replay');
 });
@@ -20,6 +22,7 @@ beforeAll(async () => {
 afterAll(() => {
   fs.rmSync(TEST_KEY_DIR, { recursive: true, force: true });
   fs.rmSync(TEST_RIGS_ROOT, { recursive: true, force: true });
+  fs.rmSync(TEST_KG, { force: true });
 });
 
 function makeHeader(seq: number): ConvoyHeader {

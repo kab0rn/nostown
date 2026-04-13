@@ -1,11 +1,11 @@
-// Tests: Mayor checkpoints plan before dispatch (#8)
-// Tests that orchestrate() saves a MemPalace checkpoint and attaches checkpoint_id to all beads
+// Tests: Mayor generates a local checkpoint ID before dispatch (#8)
+// Tests that orchestrate() produces a checkpoint_id and attaches it to all beads.
+// Checkpoints are ephemeral local UUIDs (ckpt_<12hex>), not persisted to the KG.
 
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { Mayor } from '../../src/roles/mayor';
-import { MemPalaceClient } from '../../src/mempalace/client';
 import { GroqProvider } from '../../src/groq/provider';
 import { generateKeyPair } from '../../src/convoys/sign';
 
@@ -16,6 +16,7 @@ const TEST_DB = path.join(os.tmpdir(), `nos-ckpt-kg-${Date.now()}.sqlite`);
 beforeAll(async () => {
   process.env.NOS_ROLE_KEY_DIR = TEST_KEY_DIR;
   process.env.NOS_RIGS_ROOT = TEST_RIGS_ROOT;
+  process.env.NOS_KG_PATH = TEST_DB;
   fs.mkdirSync(TEST_KEY_DIR, { recursive: true });
   fs.mkdirSync(TEST_RIGS_ROOT, { recursive: true });
   await generateKeyPair('mayor_ckpt');
@@ -53,9 +54,7 @@ const FAKE_DECOMPOSE_RESULT = JSON.stringify({
 
 describe('Mayor checkpoint before dispatch (#8)', () => {
   let mayor: Mayor;
-  let saveCheckpointSpy: jest.SpyInstance;
   let executeSpy: jest.SpyInstance;
-  let wakeupSpy: jest.SpyInstance;
 
   beforeEach(() => {
     mayor = new Mayor({
@@ -63,19 +62,6 @@ describe('Mayor checkpoint before dispatch (#8)', () => {
       rigName: 'ckpt-rig',
       kgPath: TEST_DB,
     });
-
-    // Mock palace to avoid network calls
-    wakeupSpy = jest
-      .spyOn(MemPalaceClient.prototype, 'wakeup')
-      .mockRejectedValue(new Error('palace offline (non-fatal)'));
-
-    jest
-      .spyOn(MemPalaceClient.prototype, 'search')
-      .mockRejectedValue(new Error('palace offline (non-fatal)'));
-
-    saveCheckpointSpy = jest
-      .spyOn(MemPalaceClient.prototype, 'saveCheckpoint')
-      .mockResolvedValue('ckpt-test-abc123');
 
     // Mock Groq to return valid bead decomposition
     executeSpy = jest
@@ -88,13 +74,12 @@ describe('Mayor checkpoint before dispatch (#8)', () => {
     jest.restoreAllMocks();
   });
 
-  it('calls saveCheckpoint before returning dispatch plan', async () => {
+  it('orchestrate() returns a checkpoint_id matching ckpt_ pattern', async () => {
     const plan = await mayor.orchestrate({
       description: 'Test task for checkpoint validation',
     });
 
-    expect(saveCheckpointSpy).toHaveBeenCalledTimes(1);
-    expect(plan.checkpoint_id).toBe('ckpt-test-abc123');
+    expect(plan.checkpoint_id).toMatch(/^ckpt_[a-f0-9-]{12}$/);
   });
 
   it('all returned beads carry the plan_checkpoint_id', async () => {
@@ -104,33 +89,8 @@ describe('Mayor checkpoint before dispatch (#8)', () => {
 
     expect(plan.beads.length).toBeGreaterThan(0);
     for (const bead of plan.beads) {
-      expect(bead.plan_checkpoint_id).toBe('ckpt-test-abc123');
+      expect(bead.plan_checkpoint_id).toBe(plan.checkpoint_id);
     }
-  });
-
-  it('blocks orchestrate if checkpoint save fails', async () => {
-    saveCheckpointSpy.mockRejectedValue(new Error('palace DB unavailable'));
-
-    await expect(
-      mayor.orchestrate({ description: 'Will fail at checkpoint' }),
-    ).rejects.toThrow(/checkpoint failed/);
-  });
-
-  it('saveCheckpoint is called with agentId and bead IDs', async () => {
-    const plan = await mayor.orchestrate({ description: 'Checkpoint args test' });
-
-    expect(saveCheckpointSpy).toHaveBeenCalledWith(
-      'mayor_ckpt',
-      expect.objectContaining({
-        task: expect.any(Object),
-        beads: expect.any(Array),
-      }),
-      expect.arrayContaining([expect.any(String)]),
-    );
-
-    // Bead count in the checkpoint matches returned beads
-    const callArgs = saveCheckpointSpy.mock.calls[0] as [string, unknown, string[]];
-    expect(callArgs[2].length).toBe(plan.beads.length);
   });
 
   it('throws WAITING_FOR_CAPACITY when in-flight limit is exceeded', async () => {
@@ -258,138 +218,103 @@ describe('Mayor outage queue (RESILIENCE.md §Convoy Queueing)', () => {
     const count = await mayor.drainOutageQueue(bus, 1);
     expect(count).toBe(0);
   });
-
-  it('dispatchBead persists bead to MemPalace outage-queue when outage is active', async () => {
-    const { ConvoyBus } = await import('../../src/convoys/bus');
-    const { Ledger: LedgerCls } = await import('../../src/ledger/index');
-    const bus = new ConvoyBus('persist-outage-rig');
-
-    const bead = LedgerCls.createBead({
-      role: 'polecat',
-      task_type: 'execute',
-      model: 'test',
-      rig: 'persist-outage-rig',
-      status: 'pending',
-      plan_checkpoint_id: 'ckpt-persist-001',
-      bead_id: 'persist-bead-001',
-    });
-
-    const addDrawerSpy = jest.spyOn(MemPalaceClient.prototype, 'addDrawer').mockResolvedValue({ id: 'ok' });
-
-    mayor.setOutageActive(true);
-    await mayor.dispatchBead(bead, bus, 1);
-
-    // Should have called addDrawer to persist bead to outage-queue
-    const outageQueueCalls = addDrawerSpy.mock.calls.filter(
-      (args) => (args[2] as string) === 'outage-queue',
-    );
-    expect(outageQueueCalls.length).toBeGreaterThan(0);
-    const persistedBead = JSON.parse(outageQueueCalls[0][3] as string) as { bead_id: string };
-    expect(persistedBead.bead_id).toBe('persist-bead-001');
-  });
 });
 
-describe('Mayor startup recovery (RESILIENCE.md §Mayor Session Recovery)', () => {
+describe('Mayor CoVe self-critique pass (P8)', () => {
   let mayor: Mayor;
-  let diaryReadSpy: jest.SpyInstance;
-  let searchSpy: jest.SpyInstance;
 
   beforeEach(() => {
-    jest.restoreAllMocks();
-    mayor = new Mayor({ agentId: 'mayor_ckpt', rigName: 'startup-rig', kgPath: TEST_DB });
-
-    diaryReadSpy = jest.spyOn(MemPalaceClient.prototype, 'diaryRead').mockResolvedValue([]);
-    searchSpy = jest.spyOn(MemPalaceClient.prototype, 'search').mockResolvedValue({ results: [], total: 0 });
+    mayor = new Mayor({
+      agentId: 'mayor_ckpt',
+      rigName: 'cove-rig',
+      kgPath: TEST_DB,
+    });
   });
 
   afterEach(() => {
     mayor.close();
+    jest.restoreAllMocks();
   });
 
-  it('calls diaryRead for wing_mayor on startup (step 1)', async () => {
-    await mayor.startup();
-    expect(diaryReadSpy).toHaveBeenCalledWith('wing_mayor');
-  });
-
-  it('queries outage-queue in hall_events on startup (step 3)', async () => {
-    await mayor.startup();
-    const outageQueueSearchCalls = searchSpy.mock.calls.filter(
-      (args) => (args[0] as string) === 'outage-queue' && (args[2] as string) === 'hall_events',
-    );
-    expect(outageQueueSearchCalls.length).toBeGreaterThan(0);
-  });
-
-  it('recovers beads from persisted outage-queue on startup', async () => {
-    const { Ledger: LedgerCls } = await import('../../src/ledger/index');
-    const bead = LedgerCls.createBead({
-      role: 'polecat',
-      task_type: 'execute',
-      model: 'test',
-      rig: 'startup-rig',
-      status: 'pending',
-      plan_checkpoint_id: 'ckpt-recover-001',
-      bead_id: 'recover-bead-001',
+  it('CoVe adds a missing dependency edge when second call returns a correction', async () => {
+    // First call (decompose): two beads, B does NOT list A as a need
+    const decomposeResult = JSON.stringify({
+      beads: [
+        { task_type: 'setup', task_description: 'Step A', role: 'polecat', needs: [], critical_path: false, witness_required: false, fan_out_weight: 1 },
+        { task_type: 'deploy', task_description: 'Step B (should need A)', role: 'polecat', needs: [], critical_path: false, witness_required: false, fan_out_weight: 1 },
+      ],
     });
 
-    // Simulate prior session that persisted a bead to outage-queue
-    searchSpy.mockImplementation((query: string, _wing: string, hall: string) => {
-      if (query === 'outage-queue' && hall === 'hall_events') {
-        return Promise.resolve({
-          results: [{ id: 'outage-1', content: JSON.stringify(bead) }],
-          total: 1,
+    jest.spyOn(GroqProvider.prototype, 'executeInference')
+      .mockImplementation(async (params) => {
+        if (params.task_type === 'decompose') {
+          return decomposeResult;
+        }
+        // CoVe call: extract bead IDs from the plan JSON embedded in user message
+        const userContent = params.messages.find((m) => m.role === 'user')?.content ?? '';
+        const ids = [...userContent.matchAll(/"id":\s*"([^"]+)"/g)].map((m) => m[1]);
+        // Add a missing edge: bead[1] should depend on bead[0]
+        return JSON.stringify({
+          corrections: [{ bead_id: ids[1], add_needs: [ids[0]] }],
         });
-      }
-      return Promise.resolve({ results: [], total: 0 });
-    });
+      });
 
-    await mayor.startup();
+    const plan = await mayor.orchestrate({ description: 'Two-step deploy task' });
+    expect(plan.beads).toHaveLength(2);
 
-    // Should have recovered the bead into the in-memory outage queue
-    expect(mayor.outageQueueDepth).toBe(1);
+    // bead[1] should now have bead[0] in its needs list
+    const beadA = plan.beads[0];
+    const beadB = plan.beads[1];
+    expect(beadB.needs).toContain(beadA.bead_id);
   });
 
-  it('returns true when active-convoy checkpoint exists', async () => {
-    searchSpy.mockImplementation((query: string, _wing: string, hall: string) => {
-      if (query === 'active-convoy' && hall === 'hall_facts') {
-        return Promise.resolve({
-          results: [{ id: 'ckpt-1', content: '{"checkpoint_id":"ckpt-1"}' }],
-          total: 1,
+  it('CoVe failure is non-fatal — original plan is returned', async () => {
+    jest.spyOn(GroqProvider.prototype, 'executeInference')
+      .mockImplementation(async (params) => {
+        if (params.task_type === 'decompose') {
+          return FAKE_DECOMPOSE_RESULT; // 2 beads, no needs
+        }
+        throw new Error('Groq rate limit');
+      });
+
+    const plan = await mayor.orchestrate({ description: 'Task where CoVe fails' });
+    // Should still get the original plan intact
+    expect(plan.beads).toHaveLength(2);
+    for (const bead of plan.beads) {
+      expect(bead.needs).toEqual([]);
+    }
+  });
+
+  it('CoVe correction that introduces a cycle is discarded — original plan returned', async () => {
+    // First call: bead A depends on B (A.needs = [B.id])
+    // CoVe then tries to add B.needs = [A.id], creating a cycle
+    let beadAId = '';
+    let beadBId = '';
+
+    jest.spyOn(GroqProvider.prototype, 'executeInference')
+      .mockImplementation(async (params) => {
+        if (params.task_type === 'decompose') {
+          return FAKE_DECOMPOSE_RESULT; // 2 beads, both needs=[]
+        }
+        // CoVe call: capture both IDs and propose a mutual dependency (cycle)
+        const userContent = params.messages.find((m) => m.role === 'user')?.content ?? '';
+        const ids = [...userContent.matchAll(/"id":\s*"([^"]+)"/g)].map((m) => m[1]);
+        beadAId = ids[0];
+        beadBId = ids[1];
+        // A needs B AND B needs A → cycle
+        return JSON.stringify({
+          corrections: [
+            { bead_id: beadAId, add_needs: [beadBId] },
+            { bead_id: beadBId, add_needs: [beadAId] },
+          ],
         });
-      }
-      return Promise.resolve({ results: [], total: 0 });
-    });
+      });
 
-    const orphanFound = await mayor.startup();
-    expect(orphanFound).toBe(true);
-  });
-
-  it('returns false when no active-convoy checkpoint exists', async () => {
-    const orphanFound = await mayor.startup();
-    expect(orphanFound).toBe(false);
-  });
-
-  it('writes MAYOR_ADOPTION audit log when orphan workflow adopted (OBSERVABILITY.md)', async () => {
-    // Spy on auditLog via the module object (ts-jest compiles property-access style)
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const auditModule = require('../../src/hardening/audit') as typeof import('../../src/hardening/audit');
-    const auditLogSpy = jest.spyOn(auditModule, 'auditLog');
-
-    searchSpy.mockImplementation((query: string, _wing: string, hall: string) => {
-      if (query === 'active-convoy' && hall === 'hall_facts') {
-        return Promise.resolve({
-          results: [{ id: 'ckpt-adopt-001', content: '{"checkpoint_id":"ckpt-adopt-001"}' }],
-          total: 1,
-        });
-      }
-      return Promise.resolve({ results: [], total: 0 });
-    });
-
-    await mayor.startup();
-
-    const adoptionCall = auditLogSpy.mock.calls.find((args) => args[0] === 'MAYOR_ADOPTION');
-    expect(adoptionCall).toBeDefined();
-    expect(adoptionCall?.[1]).toBe('mayor_ckpt');
-
-    auditLogSpy.mockRestore();
+    const plan = await mayor.orchestrate({ description: 'Cycle-inducing CoVe task' });
+    // Cycle should be detected and CoVe corrections discarded; original has no needs
+    expect(plan.beads).toHaveLength(2);
+    for (const bead of plan.beads) {
+      expect(bead.needs).toEqual([]);
+    }
   });
 });

@@ -24,18 +24,6 @@ Each risk entry includes:
 
 ## Active Risks
 
-### R-001 — MemPalace SQLite Write Ceiling
-
-- **Severity:** High
-- **Owner:** Platform / Memory
-- **Why it remains open:** Single-writer SQLite behavior may become the dominant bottleneck under concurrent Polecat, Witness, Safeguard, and Historian writes.
-- **How to detect it:** Run concurrent writer load tests at 5, 10, 15, and 20 writers.
-- **Metric / Alert:** `mempalace_write_latency_ms` p95
-- **Test:** `tests/integration/mempalace-write-contention.test.ts`
-- **Review Gates:** Gate 1, Gate 4, Gate 8
-- **Go / No-Go Threshold:** p95 <= 50ms for expected gate load; >200ms is gate failure
-- **Current Status:** MITIGATED — write queue serializes concurrent ops with bounded concurrency; Mode B promotion advisory triggers at p95>150ms. Tests: 9 assertions covering concurrent writes, concurrency cap, queue overflow, p95 tracking. Metric instrumentation: `mempalace_write_latency_ms` histogram wired.
-
 ### R-002 — Mayor Orphan Workflow Replay Errors
 
 - **Severity:** Critical
@@ -46,7 +34,7 @@ Each risk entry includes:
 - **Test:** `tests/integration/mayor-adoption.test.ts`
 - **Review Gates:** Gate 2, Gate 8
 - **Go / No-Go Threshold:** zero duplicate bead creation; zero unreconciled active convoy on resume
-- **Current Status:** MITIGATED — startup() reads existing ledger beads and logs adoption without re-writing; idempotency verified by reading bead IDs before and after adoption (5 tests). MAYOR_ADOPTION audit event emitted and verified. Replacement Mayor can orchestrate new goals after adoption.
+- **Current Status:** MITIGATED — startup() reads existing Ledger beads (`rigs/<rig>/beads/current.jsonl`) and logs adoption without re-writing; idempotency verified by reading bead IDs before and after adoption (5 tests). MAYOR_ADOPTION audit event emitted and verified. Replacement Mayor can orchestrate new goals after adoption.
 
 ### R-003 — Forged Convoy Sender
 
@@ -118,7 +106,7 @@ Each risk entry includes:
 - **Test:** `tests/integration/safeguard-pool-failover.test.ts`
 - **Review Gates:** Gate 6, Gate 8
 - **Go / No-Go Threshold:** p95 scan latency within budget; no single-worker dependency
-- **Current Status:** MITIGATED — Safeguard pool with configurable size (min 2); shared ruleset cache; scan latency tracked as `safeguard_scan_latency_ms` histogram; queue depth as `safeguard_queue_depth` gauge. Integration tests verify pool continues after worker loss.
+- **Current Status:** MITIGATED — Safeguard pool with configurable size (min 2 dev, 4 staging/prod); shared in-process ruleset cache across workers (module-level); scan latency tracked as `safeguard_scan_latency_ms` histogram; queue depth as `safeguard_queue_depth` gauge. Integration tests verify pool continues after worker loss.
 
 ### R-009 — Ledger Partition Contention
 
@@ -143,3 +131,15 @@ Each risk entry includes:
 - **Review Gates:** Gate 2, Gate 4, Gate 8
 - **Go / No-Go Threshold:** stale playbooks are advisory-only
 - **Current Status:** MITIGATED — Mayor.orchestrate() checks freshness (sample_size >= 20, no recent Witness rejections, no active Safeguard lockdown) before using playbook as route-lock. KG routing locks via RoutingDispatcher verified end-to-end. Integration tests cover: KG lock, demotion, playbook shortcut, complexity fallback, DCR class-awareness.
+
+### R-011 — Safeguard Pattern Cache Lost on Restart
+
+- **Severity:** Low
+- **Owner:** Security / Runtime
+- **Why it remains open:** The Safeguard in-process pattern cache is session-local and is not persisted across process restarts. Vulnerability patterns discovered during a session are not carried to the next session.
+- **How to detect it:** Restart the process after a session that triggered new pattern learning; verify next session starts from an empty cache.
+- **Metric / Alert:** `safeguard_learned_patterns_count` drops to 0 on restart
+- **Test:** `tests/unit/safeguard-patterns.test.ts` (`_resetPatternCacheForTesting` documents this behavior)
+- **Review Gates:** Gate 6, Gate 8
+- **Go / No-Go Threshold:** Acceptable — by design. The static ruleset (`src/hardening/safeguard-rules.jsonl`) covers all known critical patterns. Session-learned patterns improve recall within a session but are not relied upon for baseline safety.
+- **Current Status:** ACCEPTED — Session-local cache is the intended design. If cross-session pattern persistence becomes a requirement, the mitigation is to write learned patterns to the KG at LOCKDOWN time (already done via `lockdown_{id} triggered_by {vuln_type}` triple) and reload them at startup via a KG query. Not implemented; filed here for future consideration.

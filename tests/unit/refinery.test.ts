@@ -16,18 +16,6 @@ jest.mock('../../src/groq/provider.js', () => ({
   })),
 }));
 
-// --- mock MemPalaceClient ---
-const mockSearch = jest.fn<() => Promise<{ results: Array<{ content: string }> }>>();
-const mockAddDrawer = jest.fn<() => Promise<void>>();
-
-jest.mock('../../src/mempalace/client.js', () => ({
-  __esModule: true,
-  MemPalaceClient: jest.fn().mockImplementation(() => ({
-    search: mockSearch,
-    addDrawer: mockAddDrawer,
-  })),
-}));
-
 import { Refinery } from '../../src/roles/refinery.js';
 import { KnowledgeGraph } from '../../src/kg/index.js';
 
@@ -38,10 +26,6 @@ beforeEach(() => {
   kgPath = path.join(os.tmpdir(), `refinery_test_${Date.now()}_${Math.random().toString(36).slice(2)}.sqlite`);
   kg = new KnowledgeGraph(kgPath);
   mockExecuteInference.mockReset();
-  mockSearch.mockReset();
-  mockAddDrawer.mockReset();
-  mockSearch.mockResolvedValue({ results: [] });
-  mockAddDrawer.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -89,26 +73,6 @@ describe('Refinery.analyze()', () => {
     expect(analysis.createdAt).toBeTruthy();
   });
 
-  test('writes architectural decision to hall_facts', async () => {
-    mockExecuteInference.mockResolvedValue(GOOD_RESPONSE);
-
-    const refinery = makeRefinery();
-    const analysis = await refinery.analyze(
-      'Fix circular dependency in auth module',
-      'architecture',
-      { witnessReason: 'Circular import detected', attempts: 2 },
-    );
-    refinery.close();
-
-    expect(mockAddDrawer).toHaveBeenCalledWith(
-      'wing_rig_test_rig',
-      'hall_facts',
-      `refinery_${analysis.id}`,
-      expect.stringContaining('"rootCause"'),
-      expect.stringContaining('architectural decision architecture'),
-    );
-  });
-
   test('writes KG triple with architectural_decision relation', async () => {
     mockExecuteInference.mockResolvedValue(GOOD_RESPONSE);
 
@@ -129,29 +93,6 @@ describe('Refinery.analyze()', () => {
     expect(triples[0].object).toBe(`refinery_${analysis.id}`);
     expect(triples[0].metadata?.class).toBe('advisory');
     expect(triples[0].metadata?.confidence).toBe('high');
-  });
-
-  test('uses prior context from hall_facts when available', async () => {
-    mockSearch.mockResolvedValue({
-      results: [
-        { content: 'Prior decision: always use dependency injection for auth modules' },
-      ],
-    });
-    mockExecuteInference.mockResolvedValue(GOOD_RESPONSE);
-
-    const refinery = makeRefinery();
-    await refinery.analyze(
-      'Fix circular dependency in auth module',
-      'architecture',
-      { witnessReason: 'Circular import detected', attempts: 2 },
-    );
-    refinery.close();
-
-    // The inference call should include prior context
-    const callArg = mockExecuteInference.mock.calls[0][0] as { messages: Array<{ role: string; content: string }> };
-    const userMessage = callArg.messages.find((m) => m.role === 'user')?.content ?? '';
-    expect(userMessage).toContain('Prior architectural decisions');
-    expect(userMessage).toContain('Prior decision: always use dependency injection');
   });
 
   test('includes diff and errorDetail in inference prompt when provided', async () => {
@@ -220,36 +161,6 @@ describe('Refinery.analyze()', () => {
     expect(analysis.recommendedApproach).toBe('');
     expect(analysis.confidenceLevel).toBe('low');
     expect(analysis.followUpBeads).toEqual([]);
-  });
-
-  test('continues if palace search throws (non-fatal)', async () => {
-    mockSearch.mockRejectedValue(new Error('Palace unreachable'));
-    mockExecuteInference.mockResolvedValue(GOOD_RESPONSE);
-
-    const refinery = makeRefinery();
-    const analysis = await refinery.analyze('task', 'architecture', { witnessReason: 'fail', attempts: 1 });
-    refinery.close();
-
-    // Should still return a valid analysis
-    expect(analysis.rootCause).toBe('Circular dependency between modules A and B');
-  });
-
-  test('logs warning if hall_facts write fails (non-fatal)', async () => {
-    mockExecuteInference.mockResolvedValue(GOOD_RESPONSE);
-    mockAddDrawer.mockRejectedValue(new Error('Palace write failed'));
-
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-
-    const refinery = makeRefinery();
-    const analysis = await refinery.analyze('task', 'architecture', { witnessReason: 'fail', attempts: 1 });
-    refinery.close();
-
-    expect(analysis.rootCause).toBe('Circular dependency between modules A and B');
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Failed to write hall_facts'),
-    );
-
-    warnSpy.mockRestore();
   });
 
   test('uses groq/compound model for inference', async () => {

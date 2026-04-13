@@ -1,7 +1,13 @@
 // Tests: GroqBatchClient — Batch API for nightly 70B playbook synthesis
 // Per GROQ_INTEGRATION.md §Batch API: upload JSONL, create job, poll, distill results.
 
+import * as os from 'os';
+import * as path from 'path';
+import * as fs from 'fs';
 import { GroqBatchClient, type BatchRequest, type BatchJob, type BatchResult } from '../../src/groq/batch';
+import { GroqProvider } from '../../src/groq/provider';
+import { Historian } from '../../src/roles/historian';
+import { Ledger } from '../../src/ledger/index';
 
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
@@ -168,5 +174,98 @@ describe('Historian.generatePlaybooks() batch mode', () => {
     const results = await mockBatchClient.runBatch([makeRequest()]);
     expect(results).toEqual([]);
     expect(runBatchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Integration: Historian routes to batch vs sequential based on eligible count ──
+
+const TEST_KG = path.join(os.tmpdir(), `nos-batch-kg-${Date.now()}.sqlite`);
+const TEST_RIGS = path.join(os.tmpdir(), `nos-batch-rigs-${Date.now()}`);
+const TEST_RIG = 'batch-test-rig';
+
+beforeAll(() => {
+  process.env.NOS_KG_PATH = TEST_KG;
+  process.env.NOS_RIGS_ROOT = TEST_RIGS;
+  fs.mkdirSync(TEST_RIGS, { recursive: true });
+});
+
+afterAll(() => {
+  fs.rmSync(TEST_KG, { force: true });
+  fs.rmSync(TEST_RIGS, { recursive: true, force: true });
+  delete process.env.NOS_KG_PATH;
+  delete process.env.NOS_RIGS_ROOT;
+  jest.restoreAllMocks();
+});
+
+function makeSuccessBead(taskType: string, index: number): import('../../src/types/index').Bead {
+  return Ledger.createBead({
+    role: 'polecat',
+    task_type: taskType,
+    model: 'llama-3.1-8b-instant',
+    task_description: `${taskType} task ${index}`,
+    rig: TEST_RIG,
+    status: 'done',
+    outcome: 'SUCCESS',
+    plan_checkpoint_id: `ckpt-batch-${taskType}`,
+  });
+}
+
+describe('Historian.runNightly() batch routing (P10)', () => {
+  let historian: Historian;
+  let ledger: Ledger;
+
+  beforeEach(() => {
+    historian = new Historian({ agentId: 'historian_test', kgPath: TEST_KG });
+    ledger = new Ledger();
+  });
+
+  afterEach(() => {
+    historian.close();
+    jest.restoreAllMocks();
+  });
+
+  it('calls GroqBatchClient.createBatch() when multiple eligible task types exist', async () => {
+    const rig = `${TEST_RIG}-multi`;
+    // Write 3 successful beads for each of two task types (eligible: success >= 3, rate >= 70%)
+    for (let i = 0; i < 3; i++) {
+      await ledger.appendBead(rig, makeSuccessBead('implement', i));
+      await ledger.appendBead(rig, makeSuccessBead('refactor', i));
+    }
+
+    const createBatchSpy = jest.spyOn(GroqBatchClient.prototype, 'createBatch')
+      .mockResolvedValue('batch-job-123');
+    jest.spyOn(GroqBatchClient.prototype, 'pollBatch')
+      .mockResolvedValue([]);
+    // Mock KG triple write (updateRoutingKG uses provider.executeInference? No — just minePatterns)
+    // provider.executeInference is not called by minePatterns; only generatePlaybooks calls it
+
+    await historian.runNightly(rig);
+
+    expect(createBatchSpy).toHaveBeenCalledTimes(1);
+    // Should have 2 requests (one per eligible task type)
+    const callArgs = createBatchSpy.mock.calls[0][0] as BatchRequest[];
+    expect(callArgs).toHaveLength(2);
+    const customIds = callArgs.map((r) => r.custom_id).sort();
+    expect(customIds).toEqual(['implement', 'refactor']);
+  });
+
+  it('uses sequential path (not batch) when only one eligible task type exists', async () => {
+    const rig = `${TEST_RIG}-single`;
+    // Write 3 successful beads for only ONE task type
+    for (let i = 0; i < 3; i++) {
+      await ledger.appendBead(rig, makeSuccessBead('unit_test', i));
+    }
+
+    const createBatchSpy = jest.spyOn(GroqBatchClient.prototype, 'createBatch')
+      .mockResolvedValue('batch-job-456');
+    const executeInferenceSpy = jest.spyOn(GroqProvider.prototype, 'executeInference')
+      .mockResolvedValue(JSON.stringify({ title: 'Test Playbook', steps: [] }));
+
+    await historian.runNightly(rig);
+
+    // Batch should NOT have been called
+    expect(createBatchSpy).not.toHaveBeenCalled();
+    // Sequential inference should have been called
+    expect(executeInferenceSpy).toHaveBeenCalled();
   });
 });

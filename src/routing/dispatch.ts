@@ -107,28 +107,40 @@ export class RoutingDispatcher {
   }
 
   /**
+   * Enforce ROUTING.md §Playbook Freshness Guard.
+   * Returns true only when:
+   *   - success_rate > 0.90
+   *   - sample_size >= 20
+   *   - no active Safeguard lockdown for this task class
+   */
+  isPlaybookFresh(successRate: number, sampleSize: number, _taskType: string): boolean {
+    if (successRate <= 0.90) return false;
+    if (sampleSize < 20) return false;
+
+    // Block playbook use during any active Safeguard lockdown
+    if (this.kg.hasActiveLockdown()) return false;
+
+    return true;
+  }
+
+  /**
    * Check if there is an active KG routing lock for this task type.
    * Returns the locked model name, or null if no lock.
+   *
+   * Uses reverse lookup via queryEntity(taskType) so that models written by
+   * the Historian that are NOT in COMPLEXITY_MODELS (e.g. custom promoted models)
+   * are still found. (P11 — previously only searched COMPLEXITY_MODELS values)
    */
   private queryKgLock(taskType: string): string | null {
     const today = new Date().toISOString().slice(0, 10);
 
-    // Find all models with a locked_to triple for this task type
-    // (locked_to relation is stored as model → locked_to → taskType)
-    // We query for the task type as object by searching all subjects
-    // In practice, the Historian writes: subject=model, relation=locked_to, object=taskType
-    // The KG doesn't currently support reverse lookups, so we rely on the model names
-    // from ROLE_MODELS list and check each for locks.
-    // For efficiency, we check common models in priority order.
-    const modelsToCheck = Object.values(COMPLEXITY_MODELS);
+    // queryEntity returns triples where subject OR object = taskType
+    const triples = this.kg.queryEntity(taskType, today)
+      .filter((t) => t.relation === 'locked_to' && t.object === taskType);
 
-    for (const model of modelsToCheck) {
-      const triples = this.kg.queryEntity(model, today).filter((t) => t.relation === 'locked_to');
-      if (triples.some((t) => t.object === taskType)) {
-        return model;
-      }
-    }
-    return null;
+    if (triples.length === 0) return null;
+    // Most recently written lock wins (queryEntity already orders DESC valid_from)
+    return triples[0].subject;
   }
 
   /**
@@ -137,15 +149,11 @@ export class RoutingDispatcher {
    */
   private queryKgDemotion(taskType: string): string | null {
     const today = new Date().toISOString().slice(0, 10);
-    const modelsToCheck = Object.values(COMPLEXITY_MODELS);
 
-    for (const model of modelsToCheck) {
-      const triples = this.kg.queryEntity(model, today).filter((t) => t.relation === 'demoted_from');
-      if (triples.some((t) => t.object === taskType)) {
-        return model;
-      }
-    }
-    return null;
+    const triples = this.kg.queryEntity(taskType, today)
+      .filter((t) => t.relation === 'demoted_from' && t.object === taskType);
+
+    return triples.length > 0 ? triples[0].subject : null;
   }
 }
 

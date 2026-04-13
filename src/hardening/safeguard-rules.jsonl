@@ -1,0 +1,6 @@
+{"id":"secret_hardcoded","severity":"critical","name":"Hardcoded Secret","pattern":"(?:password|secret|api_key|apikey|token|credential)\\s*[:=]\\s*['\"][^'\"]{8,}['\"]","flags":"i","description":"Hardcoded secret or credential detected"}
+{"id":"eval_usage","severity":"critical","name":"eval() Usage","pattern":"\\beval\\s*\\(","description":"eval() usage detected — arbitrary code execution risk"}
+{"id":"shell_injection","severity":"high","name":"Shell Metacharacters","pattern":"(?:exec|execSync|spawn|spawnSync|shell\\.exec)\\s*\\([^)]*(?:\\$\\{|`|\\||\\;|&&|\\|\\|)","description":"Potential shell metacharacter injection"}
+{"id":"sql_injection","severity":"high","name":"SQL Injection Risk","pattern":"(?:query|execute)\\s*\\(\\s*[`'\"][^`'\"]*\\$\\{","description":"Possible SQL injection via string interpolation"}
+{"id":"private_key_pattern","severity":"critical","name":"Private Key Material","pattern":"-----BEGIN (?:RSA |EC )?PRIVATE KEY-----","description":"Private key material in diff"}
+{"id":"env_secret_leak","severity":"high","name":"Environment Secret in Output","pattern":"process\\.env\\.[A-Z_]*(?:SECRET|PASSWORD|KEY|TOKEN)","description":"Environment secret variable directly output or logged"}

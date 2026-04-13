@@ -185,6 +185,62 @@ describe('Playbook freshness conditions (R-010 §ROUTING.md §Freshness Guard)',
   });
 });
 
+// ── Historian → KG → Mayor round-trip (P2) ───────────────────────────────────
+
+describe('Historian writes playbook triple → Mayor reads it → RoutingDispatcher applies hint', () => {
+  it('round-trip: KG queryPlaybook returns fresh playbook, isPlaybookFresh passes', () => {
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Historian writes a fresh playbook triple
+    kgInsert(kg, {
+      subject: 'rig_test-rig',
+      relation: 'has_playbook',
+      object: 'playbook_scan_pb_roundtrip01',
+      agent_id: 'historian_01',
+      metadata: {
+        class: 'advisory',
+        success_rate: 0.96,
+        sample_size: 45,
+        model_hint: 'qwen/qwen3-32b',
+        stack: 'node',
+      },
+    });
+
+    // Mayor reads it via queryPlaybook
+    const meta = kg.queryPlaybook('scan', 'test-rig');
+    expect(meta).not.toBeNull();
+    expect(meta!.successRate).toBe(0.96);
+    expect(meta!.sampleSize).toBe(45);
+    expect(meta!.modelHint).toBe('qwen/qwen3-32b');
+
+    // RoutingDispatcher validates freshness
+    const fresh = router.isPlaybookFresh(meta!.successRate, meta!.sampleSize, 'scan');
+    expect(fresh).toBe(true);
+
+    // dispatch() uses the model hint when playbookHit is provided
+    const decision = router.dispatch({
+      role: 'polecat',
+      taskType: 'scan',
+      rigName: 'test-rig',
+      playbookHit: {
+        id: meta!.playbookId,
+        title: meta!.playbookId,
+        task_type: 'scan',
+        steps: [],
+        model_hint: meta!.modelHint,
+      },
+    });
+
+    expect(decision.playbookUsed).toBe(true);
+    expect(decision.model).toBe('qwen/qwen3-32b');
+  });
+
+  it('round-trip: queryPlaybook returns null when no playbook written', () => {
+    const meta = kg.queryPlaybook('boilerplate', 'test-rig-empty');
+    expect(meta).toBeNull();
+  });
+});
+
 // ── KGSyncMonitor class-aware DCR (confirms R-005 fix) ───────────────────────
 
 describe('KGSyncMonitor class-aware DCR via KG.resolveConflict() (R-005 + R-010)', () => {

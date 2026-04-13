@@ -1,6 +1,6 @@
-// Tests for Safeguard vulnerability pattern cross-session learning
-// Per ROLES.md §Safeguard: workers write detected patterns to wing_safeguard/hall_facts
-// and read them back on subsequent scans (diary-based cross-session memory).
+// Tests for Safeguard vulnerability pattern in-process cache learning
+// Per ROLES.md §Safeguard: workers cache detected patterns in-process
+// Pattern cache is session-local; cross-session persistence uses KG triples.
 
 import { jest } from '@jest/globals';
 
@@ -13,41 +13,31 @@ jest.mock('../../src/groq/provider.js', () => ({
   })),
 }));
 
-// --- mock MemPalaceClient ---
-const diaryStore: string[] = [];
-const drawerStore: Array<{ wing: string; hall: string; room: string; content: string }> = [];
-
-const mockDiaryRead = jest.fn<(wing: string, limit: number) => Promise<Array<{ content: string }>>>();
-const mockDiaryWrite = jest.fn<(wing: string, entry: string) => Promise<void>>();
-const mockAddDrawer = jest.fn<() => Promise<void>>();
-
-jest.mock('../../src/mempalace/client.js', () => ({
-  __esModule: true,
-  MemPalaceClient: jest.fn().mockImplementation(() => ({
-    diaryRead: mockDiaryRead,
-    diaryWrite: mockDiaryWrite,
-    addDrawer: mockAddDrawer,
-  })),
-}));
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 // Import after mocking — also need to reset the module-level cache
-import { SafeguardWorker, _resetPatternCacheForTesting } from '../../src/roles/safeguard.js';
+import { SafeguardWorker, _resetPatternCacheForTesting, _resetRulesetCacheForTesting } from '../../src/roles/safeguard.js';
+
+const originalRulesEnv = process.env.NOS_SAFEGUARD_RULES;
 
 beforeEach(() => {
   mockExecuteInference.mockReset();
-  mockDiaryRead.mockReset();
-  mockDiaryWrite.mockReset();
-  mockAddDrawer.mockReset();
-  diaryStore.length = 0;
-  drawerStore.length = 0;
 
   // Reset in-process pattern cache so each test starts fresh
   _resetPatternCacheForTesting();
+  _resetRulesetCacheForTesting();
+});
 
-  // Default: empty diary (no prior patterns)
-  mockDiaryRead.mockResolvedValue([]);
-  mockDiaryWrite.mockResolvedValue(undefined);
-  mockAddDrawer.mockResolvedValue(undefined);
+afterEach(() => {
+  // Restore env var
+  if (originalRulesEnv === undefined) {
+    delete process.env.NOS_SAFEGUARD_RULES;
+  } else {
+    process.env.NOS_SAFEGUARD_RULES = originalRulesEnv;
+  }
+  _resetRulesetCacheForTesting();
 });
 
 const CLEAN_RESPONSE = JSON.stringify({ violations: [] });
@@ -56,124 +46,161 @@ const NEW_VULN_RESPONSE = JSON.stringify({
 });
 
 describe('SafeguardWorker — pattern learning', () => {
-  test('loads known patterns from diary before LLM scan', async () => {
-    mockDiaryRead.mockResolvedValue([
-      { content: 'vuln-pattern:prototype_pollution: __proto__ manipulation detected' },
-      { content: 'vuln-pattern:timing_attack: Non-constant-time comparison detected' },
-    ]);
+  test('in-process cache is empty initially', async () => {
     mockExecuteInference.mockResolvedValue(CLEAN_RESPONSE);
 
     const worker = new SafeguardWorker('test_w1');
     await worker.scan('const x = {}');
 
-    // LLM scan prompt should include known patterns
+    // System prompt should not contain any known patterns when cache is empty
     const callArg = mockExecuteInference.mock.calls[0][0] as {
       messages: Array<{ role: string; content: string }>;
     };
     const systemMsg = callArg.messages.find((m) => m.role === 'system')?.content ?? '';
-    expect(systemMsg).toContain('Known vulnerability patterns from prior scans');
-    expect(systemMsg).toContain('prototype_pollution');
-    expect(systemMsg).toContain('timing_attack');
+    expect(systemMsg).not.toContain('Known vulnerability patterns from prior scans');
   });
 
-  test('persists newly discovered high/critical patterns to wing_safeguard', async () => {
-    mockDiaryRead.mockResolvedValue([]);
+  test('newly discovered high/critical patterns are added to in-process cache', async () => {
     mockExecuteInference.mockResolvedValue(NEW_VULN_RESPONSE);
 
     const worker = new SafeguardWorker('test_w2');
     await worker.scan('if (userInput === storedHash) { /* timing vulnerable */ }');
 
-    // Should have written to hall_facts drawer
-    await new Promise((r) => setTimeout(r, 20)); // allow async persist to complete
-
-    expect(mockAddDrawer).toHaveBeenCalledWith(
-      'wing_safeguard',
-      'hall_facts',
-      expect.stringContaining('vuln-timing_attack'),
-      expect.stringContaining('timing_attack'),
-      expect.stringContaining('timing_attack'),
-    );
-  });
-
-  test('persists to diary for fast cross-worker reload', async () => {
-    mockDiaryRead.mockResolvedValue([]);
-    mockExecuteInference.mockResolvedValue(NEW_VULN_RESPONSE);
-
-    const worker = new SafeguardWorker('test_w3');
-    await worker.scan('if (userInput === storedHash) {}');
-
-    await new Promise((r) => setTimeout(r, 20));
-
-    expect(mockDiaryWrite).toHaveBeenCalledWith(
-      'wing_safeguard',
-      expect.stringContaining('timing_attack'),
-    );
-  });
-
-  test('does not persist medium-severity patterns (only high/critical)', async () => {
-    const mediumResponse = JSON.stringify({
-      violations: [{ rule: 'logging_sensitive', severity: 'medium', detail: 'PII may be logged' }],
-    });
-    mockDiaryRead.mockResolvedValue([]);
-    mockExecuteInference.mockResolvedValue(mediumResponse);
-
-    const worker = new SafeguardWorker('test_w4');
-    await worker.scan('console.log(user.email)');
-
-    await new Promise((r) => setTimeout(r, 20));
-
-    // medium violations are not persisted
-    expect(mockAddDrawer).not.toHaveBeenCalled();
-    expect(mockDiaryWrite).not.toHaveBeenCalled();
-  });
-
-  test('proceeds without patterns if diary read fails (non-fatal)', async () => {
-    mockDiaryRead.mockRejectedValue(new Error('Palace offline'));
-    mockExecuteInference.mockResolvedValue(CLEAN_RESPONSE);
-
-    const worker = new SafeguardWorker('test_w5');
-    const result = await worker.scan('safe code');
-
-    expect(result.approved).toBe(true);
-  });
-
-  test('cross-session simulation: pattern written by session 1 is read by session 2', async () => {
-    // Session 1: detect a new vulnerability and write it to palace
-    const capturedDiaryEntries: string[] = [];
-
-    mockDiaryRead.mockResolvedValue([]);
-    mockDiaryWrite.mockImplementation(async (_wing: string, entry: string) => {
-      capturedDiaryEntries.push(entry);
-    });
-    mockExecuteInference.mockResolvedValue(NEW_VULN_RESPONSE);
-
-    const worker1 = new SafeguardWorker('session1_worker');
-    await worker1.scan('timing vulnerable code');
-
-    // Allow async persistPattern to complete
-    await new Promise((r) => setTimeout(r, 20));
-
-    // Confirm session 1 wrote the pattern
-    expect(capturedDiaryEntries.some((e) => e.includes('timing_attack'))).toBe(true);
-
-    // ── Session 2 starts: reset in-process cache to simulate new process ──
-    _resetPatternCacheForTesting();
-
-    // Session 2 reads diary from palace (populated by session 1)
-    mockDiaryRead.mockResolvedValue(
-      capturedDiaryEntries.map((content) => ({ content })),
-    );
+    // Now scan again — second scan should include the cached pattern
     mockExecuteInference.mockReset();
     mockExecuteInference.mockResolvedValue(CLEAN_RESPONSE);
 
-    const worker2 = new SafeguardWorker('session2_worker');
+    await worker.scan('other code');
+
+    const callArg = mockExecuteInference.mock.calls[0][0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const systemMsg = callArg.messages.find((m) => m.role === 'system')?.content ?? '';
+    expect(systemMsg).toContain('Known vulnerability patterns from prior scans');
+    expect(systemMsg).toContain('timing_attack');
+  });
+
+  test('cached patterns are shared across workers in the same process', async () => {
+    // Worker 1 discovers a pattern
+    mockExecuteInference.mockResolvedValue(NEW_VULN_RESPONSE);
+    const worker1 = new SafeguardWorker('test_w3a');
+    await worker1.scan('timing vulnerable code');
+
+    // Worker 2 (different instance) sees the pattern
+    mockExecuteInference.mockReset();
+    mockExecuteInference.mockResolvedValue(CLEAN_RESPONSE);
+
+    const worker2 = new SafeguardWorker('test_w3b');
     await worker2.scan('different code');
 
-    // Session 2's LLM scan prompt should include the pattern learned from session 1
     const callArg = mockExecuteInference.mock.calls[0][0] as {
       messages: Array<{ role: string; content: string }>;
     };
     const systemMsg = callArg.messages.find((m) => m.role === 'system')?.content ?? '';
     expect(systemMsg).toContain('timing_attack');
+  });
+
+  test('does not cache medium-severity patterns (only high/critical)', async () => {
+    const mediumResponse = JSON.stringify({
+      violations: [{ rule: 'logging_sensitive', severity: 'medium', detail: 'PII may be logged' }],
+    });
+    mockExecuteInference.mockResolvedValue(mediumResponse);
+
+    const worker = new SafeguardWorker('test_w4');
+    await worker.scan('console.log(user.email)');
+
+    // Scan again — medium patterns should not be in cache
+    mockExecuteInference.mockReset();
+    mockExecuteInference.mockResolvedValue(CLEAN_RESPONSE);
+
+    await worker.scan('safe code');
+
+    const callArg = mockExecuteInference.mock.calls[0][0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const systemMsg = callArg.messages.find((m) => m.role === 'system')?.content ?? '';
+    expect(systemMsg).not.toContain('Known vulnerability patterns from prior scans');
+  });
+
+  test('proceeds normally when LLM scan fails (non-fatal)', async () => {
+    mockExecuteInference.mockRejectedValue(new Error('LLM offline'));
+
+    const worker = new SafeguardWorker('test_w5');
+    const result = await worker.scan('safe code');
+
+    // Static rules still apply; LLM failure is non-fatal
+    expect(result.approved).toBe(true);
+    expect(result.violations).toHaveLength(0);
+  });
+
+  describe('JSONL rule loading (P12)', () => {
+    test('loads rules from NOS_SAFEGUARD_RULES file when set', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'safeguard-test-'));
+      const rulesFile = path.join(tmpDir, 'custom-rules.jsonl');
+
+      // Write a single custom rule
+      fs.writeFileSync(rulesFile, JSON.stringify({
+        id: 'custom_exec',
+        name: 'Custom exec check',
+        severity: 'critical',
+        pattern: 'customDangerousExec\\(',
+        description: 'Custom dangerous exec call',
+      }) + '\n');
+
+      process.env.NOS_SAFEGUARD_RULES = rulesFile;
+
+      mockExecuteInference.mockResolvedValue(CLEAN_RESPONSE);
+
+      const worker = new SafeguardWorker('test_jsonl_1');
+      const result = await worker.scan('customDangerousExec(userInput)');
+
+      // Custom rule should have triggered a critical violation
+      expect(result.approved).toBe(false);
+      expect(result.violations.some((v) => v.rule === 'custom_exec')).toBe(true);
+      expect(result.lockdown?.triggered).toBe(true);
+
+      fs.rmSync(tmpDir, { recursive: true });
+    });
+
+    test('falls back to built-in rules when JSONL file is malformed', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'safeguard-test-'));
+      const rulesFile = path.join(tmpDir, 'bad-rules.jsonl');
+
+      fs.writeFileSync(rulesFile, 'NOT VALID JSON\n');
+      process.env.NOS_SAFEGUARD_RULES = rulesFile;
+
+      mockExecuteInference.mockResolvedValue(CLEAN_RESPONSE);
+
+      const worker = new SafeguardWorker('test_jsonl_2');
+      // Built-in rule: eval() should still be detected
+      const result = await worker.scan('eval("dangerous code")');
+
+      expect(result.approved).toBe(false);
+      expect(result.violations.some((v) => v.rule === 'eval_usage')).toBe(true);
+
+      fs.rmSync(tmpDir, { recursive: true });
+    });
+  });
+
+  test('_resetPatternCacheForTesting clears the cache between tests', async () => {
+    // First scan adds a pattern
+    mockExecuteInference.mockResolvedValue(NEW_VULN_RESPONSE);
+    const w1 = new SafeguardWorker('test_w6a');
+    await w1.scan('vulnerable code');
+
+    // Reset
+    _resetPatternCacheForTesting();
+
+    // Second scan should not see the pattern
+    mockExecuteInference.mockReset();
+    mockExecuteInference.mockResolvedValue(CLEAN_RESPONSE);
+    const w2 = new SafeguardWorker('test_w6b');
+    await w2.scan('other code');
+
+    const callArg = mockExecuteInference.mock.calls[0][0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const systemMsg = callArg.messages.find((m) => m.role === 'system')?.content ?? '';
+    expect(systemMsg).not.toContain('Known vulnerability patterns from prior scans');
   });
 });

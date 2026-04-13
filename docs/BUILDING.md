@@ -9,7 +9,6 @@ How to build NOS Town on top of the [Gas Town](https://github.com/gastownhall/ga
 Before starting, you need:
 
 - **Node.js 20+** — NOS Town agents run in Node.js/TypeScript
-- **Python 3.11+** — Required for the `mempalace` MCP sidecar server
 - **A Groq API key** — `export GROQ_API_KEY=gsk_...`
 - **Gas Town repo cloned** — NOS Town extends Gas Town's data structures
 
@@ -32,69 +31,20 @@ nos/
 │   ├── polecat/        # Polecat agent swarm (Llama 4 Scout / 8B)
 │   ├── witness/        # Witness council (qwen3-32b / 70B)
 │   ├── historian/      # Batch mining pipeline
-│   ├── safeguard/      # Security sentry
+│   ├── safeguard/      # Security sentry (pooled)
 │   ├── routing/        # KG-backed model routing
 │   ├── convoys/        # Message bus + mailboxes
-│   └── mempalace/      # MCP client (calls sidecar)
-├── mempalace-server/   # Python MCP sidecar (separate process)
+│   ├── kg/             # Knowledge Graph (SQLite triple store)
+│   └── ledger/         # Append-only JSONL bead ledger
 ├── rigs/               # One subdir per project rig
 │   └── my-project/
 │       ├── .hook       # Gas Town hook file (schema compat)
-│       └── beads.jsonl # Gas Town bead ledger
+│       └── beads/
+│           └── current.jsonl  # Per-rig bead ledger
+├── kg/
+│   └── knowledge_graph.sqlite  # KG triple store
 └── docs/               # This documentation
 ```
-
----
-
-## Language Boundary: Node.js Agents ↔ Python MemPalace
-
-This is the most important architectural boundary to understand.
-
-**NOS Town agents** are written in **Node.js/TypeScript** and call Groq via `groq-sdk`.
-
-**MemPalace** is a **Python** package that runs as a separate MCP server process on port `:7474`.
-
-They communicate over the **MCP (Model Context Protocol)**. The Node.js agents call the MemPalace MCP server using an MCP client library — they do **not** import Python directly.
-
-```
-[Node.js Mayor/Polecat/Witness]
-          |
-          | MCP protocol (JSON-RPC over stdio or HTTP)
-          |
-[Python mempalace MCP server :7474]
-          |
-          |—— ChromaDB (vector store)
-          |—— SQLite (knowledge graph)
-          └—— filesystem (hook files, bead ledger)
-```
-
-### Starting the MemPalace sidecar
-
-```bash
-# In a separate terminal or via process manager
-cd mempalace-server/
-pip install mempalace>=3.0.0
-mempalace serve --port 7474
-```
-
-### Calling MemPalace from Node.js
-
-```typescript
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-
-const palace = new Client({ name: 'nos-town-agent', version: '1.0.0' }, {});
-
-// connect to mempalace sidecar
-await palace.connect(transport); // e.g. SSEClientTransport('http://localhost:7474')
-
-// Example: wake up a wing (L0+L1 palace read)
-const wakeup = await palace.callTool('palace_wakeup', { 
-  wing: 'wing_rig_myproject', 
-  roles: ['mayor', 'polecat'] 
-});
-```
-
-See MEMPALACE.md for all 19 tool signatures.
 
 ---
 
@@ -106,19 +56,18 @@ NOS Town maintains 1:1 compatibility with Gas Town's `.hook` file schema and `be
 
 | Gas Town Concept | File/Format | NOS Town behavior |
 |---|---|---|
-| Hook | `.hook` (JSON) | Read on session start; MemPalace L0+L1 augments but doesn't replace |
-| Bead Ledger | `beads.jsonl` | Historian reads this nightly; Drawers store verbatim copies |
-| Convoy | Convoy schema | NOS Town extends with hash verification (see CONVOYS.md) |
-| Roles (Mayor/Witness) | Role definitions | Extended with palace-first prompts (see ROLES.md) |
+| Hook | `.hook` (JSON) | Read on session start; hook executor runs variable substitution and dispatches actions |
+| Bead Ledger | `beads.jsonl` | Historian reads this nightly; KG stores derived routing decisions |
+| Convoy | Convoy schema | NOS Town extends with Ed25519 signature verification (see CONVOYS.md) |
+| Roles (Mayor/Witness) | Role definitions | Extended with KG-backed routing and Playbook protocols (see ROLES.md) |
 
 ### What NOS Town adds on top
 
 | NOS Town Addition | Where it lives | Purpose |
 |---|---|---|
-| MemPalace MCP server | `mempalace-server/` | Persistent cross-session memory |
-| Knowledge Graph | SQLite in `palace-db/` | KG-backed routing, temporal triples |
+| Knowledge Graph | `kg/knowledge_graph.sqlite` | KG-backed routing, temporal triples, audit history |
 | Historian batch job | `src/historian/` | Nightly mining of beads into Playbooks |
-| Safeguard sentry | `src/safeguard/` | Real-time security layer |
+| Safeguard sentry | `src/safeguard/` | Real-time security layer (pooled workers) |
 | Mailboxes | `src/convoys/` | Async inter-agent message bus |
 
 ---
@@ -128,52 +77,37 @@ NOS Town maintains 1:1 compatibility with Gas Town's `.hook` file schema and `be
 ### Step 1: Install dependencies
 
 ```bash
-# Node.js dependencies
 npm install
-
-# Python MemPalace sidecar
-python -m venv mempalace-server/venv
-source mempalace-server/venv/bin/activate
-pip install mempalace>=3.0.0 chromadb
 ```
 
 ### Step 2: Initialize a rig
 
-A "rig" is a project-level workspace. Each rig has a Gas Town `.hook` file and a MemPalace wing.
+A "rig" is a project-level workspace. Each rig has a Gas Town `.hook` file and a per-rig bead ledger.
 
 ```bash
 # Create the rig directory
-mkdir -p rigs/my-project
+mkdir -p rigs/my-project/beads
 
 # Initialize a Gas Town hook (copy structure from Gas Town docs)
 echo '{"project": "my-project", "state": "active"}' > rigs/my-project/.hook
-
-# Initialize the MemPalace wing for this rig
-mempalace init --wing wing_rig_myproject
 ```
 
-### Step 3: Start the MemPalace sidecar
-
-```bash
-mempalace serve --port 7474 --db-path ./palace-db
-```
-
-### Step 4: Run the Mayor
+### Step 3: Run the Mayor
 
 ```bash
 # Set env
 export GROQ_API_KEY=gsk_...
-export MEMPALACE_URL=http://localhost:7474
+export NOS_RIG=my-project
 
 # Start the Mayor orchestrator
 npx tsx src/mayor/index.ts --rig my-project
 ```
 
-### Step 5: Verify with a test task
+### Step 4: Verify with a test task
 
 ```bash
 # Send a test task via the Convoy bus
-npx tsx src/convoys/send.ts --rig my-project --task "List open rooms in my palace"
+npx tsx src/convoys/send.ts --rig my-project --task "List open issues in my rig"
 ```
 
 ---
@@ -182,14 +116,15 @@ npx tsx src/convoys/send.ts --rig my-project --task "List open rooms in my palac
 
 Build in this order — each layer depends on the one below it:
 
-1. **MemPalace MCP client** (`src/mempalace/`) — foundation for all memory reads/writes
-2. **Groq provider wrapper** (`src/groq/`) — `executeInference()` with escalation + rate limit logic
-3. **Polecat** (`src/polecat/`) — simplest agent, validates the full stack
-4. **Convoys / Mailboxes** (`src/convoys/`) — inter-agent messaging
-5. **Witness Council** (`src/witness/`) — parallel multi-judge consensus
-6. **Mayor** (`src/mayor/`) — top-level orchestrator, depends on all above
-7. **Historian** (`src/historian/`) — batch job, runs independently
-8. **Safeguard** (`src/safeguard/`) — security sentry, wraps all agent output
+1. **Groq provider wrapper** (`src/groq/`) — `executeInference()` with escalation + rate limit logic
+2. **Ledger** (`src/ledger/`) — append-only JSONL with per-rig mutex
+3. **Knowledge Graph** (`src/kg/`) — SQLite triple store with class-aware conflict resolution
+4. **Polecat** (`src/polecat/`) — simplest agent, validates the full stack
+5. **Convoys / Mailboxes** (`src/convoys/`) — inter-agent messaging
+6. **Witness Council** (`src/witness/`) — parallel multi-judge consensus
+7. **Mayor** (`src/mayor/`) — top-level orchestrator, depends on all above
+8. **Safeguard** (`src/safeguard/`) — pooled security sentry, wraps all agent output
+9. **Historian** (`src/historian/`) — batch job, runs independently
 
 ---
 
@@ -198,11 +133,12 @@ Build in this order — each layer depends on the one below it:
 | Variable | Required | Description |
 |---|---|---|
 | `GROQ_API_KEY` | Yes | Groq Cloud API key |
-| `MEMPALACE_URL` | Yes | MemPalace MCP server URL (default: `http://localhost:7474`) |
 | `NOS_RIG` | Yes | Active rig name (e.g. `my-project`) |
+| `NOS_ROLE_KEY_DIR` | Yes | Directory containing per-role Ed25519 signing keys |
 | `NOS_LOG_LEVEL` | No | Log verbosity: `debug`, `info`, `warn` (default: `info`) |
 | `HISTORIAN_CRON` | No | Cron schedule for nightly Historian run (default: `0 2 * * *`) |
 | `SAFEGUARD_MODE` | No | `sentry` (real-time) or `audit` (log-only) |
+| `OLLAMA_URL` | No | Ollama server URL — activates Tier B local fallback if set |
 
 ---
 
@@ -210,22 +146,20 @@ Build in this order — each layer depends on the one below it:
 
 ### Unit tests
 
-Test each agent in isolation by mocking the Groq SDK and MemPalace MCP client:
+Test each agent in isolation by mocking the Groq SDK:
 
 ```typescript
 // Mock the groq-sdk
 jest.mock('groq-sdk');
-
-// Mock the palace client
-jest.mock('../mempalace/client');
 ```
+
+No external server is required. All persistence is via the Ledger (JSONL) and Knowledge Graph (SQLite), both of which can be initialized in-process for tests using `tmp` directories.
 
 ### Integration tests
 
-Spin up a real MemPalace sidecar against a test SQLite + ChromaDB instance:
+Spin up a real SQLite KG and per-rig ledger in a temp directory:
 
 ```bash
-MEMPALACE_URL=http://localhost:7475 mempalace serve --port 7475 --db-path ./test-palace-db
 npx jest --testPathPattern=integration
 ```
 
@@ -241,7 +175,6 @@ npx jest --testPathPattern=e2e
 
 ## Related Docs
 
-- [MEMPALACE.md](MEMPALACE.md) — All 19 MCP tool signatures, palace hierarchy, AAAK compression
 - [ROLES.md](ROLES.md) — Agent prompt templates and agentic protocols
 - [GROQ_INTEGRATION.md](GROQ_INTEGRATION.md) — SDK setup, model selection matrix, Batch API
 - [ROUTING.md](ROUTING.md) — Escalation ladder and KG-backed routing
@@ -253,8 +186,8 @@ npx jest --testPathPattern=e2e
 
 | Gate | Risk to Surface | How to Look for It | Exit Criterion |
 |---|---|---|---|
-| Gate 1 | MemPalace sidecar saturation | Load test 5, 10, 15 concurrent writes; measure p95 KG and drawer write latency | p95 KG write <= 50ms and p95 drawer write <= 150ms |
-| Gate 1 | MemPalace packaging / sidecar reality gap | Build or pin actual sidecar artifact; verify startup, tool calls, schema creation | Sidecar starts cleanly, tools respond, DB schema created |
+| Gate 1 | Ledger mutex contention under concurrent writes | Load test 5, 10, 15 concurrent writers per rig | p95 lock wait <= 25ms |
+| Gate 1 | KG SQLite write latency | Benchmark concurrent triple inserts | p95 KG write <= 50ms |
 | Gate 2 | Mayor orphan workflow risk | Kill Mayor mid-dispatch during integration run | Replacement Mayor resumes without duplicate bead creation |
 | Gate 2 | Playbook freshness drift | Replay stale playbook scenarios with recent rejections | Stale playbooks are advisory-only, not route-locking |
 | Gate 3 | Forged convoy sender | Inject valid-HMAC but wrong-key message | Receiver rejects with `AUTHN_FAILED` or `AUTHZ_DENIED` |
@@ -276,14 +209,14 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 **Goal**: Get the core infrastructure running
 
 **Deliverables**:
-- [ ] MemPalace MCP server running (`palace serve`)
 - [ ] SQLite Knowledge Graph initialized with schema from [KNOWLEDGE_GRAPH.md](./KNOWLEDGE_GRAPH.md)
+- [ ] Per-rig Ledger with append-only JSONL and mutex
 - [ ] Groq SDK integration with preview/primary model selection (see [GROQ_INTEGRATION.md](./GROQ_INTEGRATION.md))
 - [ ] Gas Town CLI installed and bead ledger initialized
 
-**Test**: Create a test bead, resolve it with Groq, verify MemPalace stores the event
+**Test**: Create a test bead, resolve it with Groq, verify Ledger and KG store the outcome
 
-**Files**: `src/mempalace/client.ts`, `src/groq/sdk.ts`, `palace/db/knowledge_graph.sqlite`, `package.json`
+**Files**: `src/ledger/index.ts`, `src/kg/index.ts`, `src/groq/sdk.ts`, `package.json`
 
 ---
 
@@ -293,13 +226,13 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 
 **Deliverables**:
 - [ ] Mayor role with model promotion logic (see [ROLES.md](./ROLES.md))
-- [ ] Historian role with event logging to MemPalace (see [HISTORIAN.md](./HISTORIAN.md))
+- [ ] Historian role with nightly KG writes (see [HISTORIAN.md](./HISTORIAN.md))
 - [ ] Event routing rules from [ROUTING.md](./ROUTING.md) implemented in `src/routing/dispatch.ts`
 - [ ] Convoy bus for inter-role messaging (see [CONVOYS.md](./CONVOYS.md))
 
-**Test**: Mayor assigns a bead → Researcher resolves → Historian logs → Mayor promotes model
+**Test**: Mayor assigns a bead → Polecat resolves → Historian logs → Mayor promotes model via KG
 
-**Files**: `src/roles/mayor.ts`, `src/roles/historian.ts`, `src/routing/dispatch.ts`, `src/convoy/bus.ts`
+**Files**: `src/roles/mayor.ts`, `src/roles/historian.ts`, `src/routing/dispatch.ts`, `src/convoys/bus.ts`
 
 ---
 
@@ -308,30 +241,30 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 **Goal**: Enable Gas Town compatibility via convoy transport
 
 **Deliverables**:
-- [ ] Convoy signature generation and validation (see [CONVOYS.md](./CONVOYS.md))
-- [ ] Inter-agent communication bus at `src/convoy/transport.ts`
+- [ ] Convoy signature generation and validation using Ed25519 per-role keys (see [CONVOYS.md](./CONVOYS.md))
+- [ ] Inter-agent communication bus at `src/convoys/bus.ts`
 - [ ] Sequence number enforcement and replay attack prevention
 - [ ] Failure quarantine logic
 
 **Test**: Send a signed convoy → verify validation passes → Receiver processes message
 
-**Files**: `src/convoy/transport.ts`, `src/convoy/sign.ts`, `src/convoy/verify.ts`
+**Files**: `src/convoys/bus.ts`, `src/convoys/sign.ts`
 
 ---
 
 ### Gate 4: Knowledge Graph Integration
 
-**Goal**: Use the KG for dependency tracking and state queries
+**Goal**: Use the KG for routing locks, audit history, and class-aware conflict resolution
 
 **Deliverables**:
-- [ ] Bead dependency graph stored as triples (see [KNOWLEDGE_GRAPH.md](./KNOWLEDGE_GRAPH.md))
-- [ ] MCP tools for KG queries: `kg_query`, `kg_insert`, `kg_traverse`
-- [ ] Swarm coordination using KG for prerequisite tracking (see [SWARM.md](./SWARM.md))
-- [ ] Circular dependency detection
+- [ ] KG triple store with class-aware resolveConflict() (see [KNOWLEDGE_GRAPH.md](./KNOWLEDGE_GRAPH.md))
+- [ ] Temporal triples with `valid_from` / `valid_to` windows
+- [ ] Mayor KG routing lock query at dispatch time
+- [ ] Circular dependency detection in Convoy bus
 
-**Test**: Create a swarm with fork-join pattern → verify KG tracks dependencies → all beads resolve in correct order
+**Test**: Create a routing lock in KG → Mayor respects lock at next dispatch → lock demotion writes correctly
 
-**Files**: `src/kg/client.ts`, `src/kg/tools.ts`, `palace/db/knowledge_graph.sqlite`
+**Files**: `src/kg/index.ts`, `src/routing/dispatch.ts`
 
 ---
 
@@ -342,7 +275,7 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 **Deliverables**:
 - [ ] Hook loader from `hooks/*.hook` files (see [HOOK_SCHEMA.md](./HOOK_SCHEMA.md))
 - [ ] Hook validation for required fields and action types
-- [ ] Variable substitution engine for `{{event.beadId}}` syntax
+- [ ] Variable substitution engine for `{{event.beadId}}` syntax with allow-list
 - [ ] Hook execution with priority ordering
 - [ ] Action handlers for: MCP_TOOL, CONVOY, KG_QUERY, CUSTOM
 
@@ -365,7 +298,7 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 
 **Test**: Simulate Groq API failure → verify circuit breaker opens → fallback model used → service continues
 
-**Files**: `src/resilience/circuit-breaker.ts`, `src/groq/fallback.ts`, `src/hardening/sanitize.ts`
+**Files**: `src/groq/provider.ts`, `src/hardening/sanitize.ts`
 
 ---
 
@@ -378,11 +311,10 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 - [ ] Broadcast convoy support
 - [ ] Rendezvous bead waiting for multiple prerequisites
 - [ ] Swarm failure handling and recovery
-- [ ] MCP tools: `swarm_status`, `swarm_broadcast`
 
 **Test**: Execute a 10-bead swarm with parallel and sequential stages → verify all complete → no deadlocks
 
-**Files**: `src/swarm/coordinator.ts`, `src/swarm/tools.ts`
+**Files**: `src/swarm/coordinator.ts`
 
 ---
 
@@ -392,7 +324,7 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 
 **Deliverables**:
 - [ ] All unit tests passing (see Testing Strategy section)
-- [ ] Integration test: Real MemPalace + Groq + Gas Town CLI
+- [ ] Integration test: Real KG + Groq + Gas Town CLI
 - [ ] Load test: 100+ beads processed concurrently
 - [ ] Gas Town compatibility test: nostown and gastown agents interoperate
 - [ ] Documentation complete and reviewed
@@ -407,8 +339,8 @@ To ensure the gastown team can build a complete project plan, NOS Town's impleme
 
 Follow this sequence for fastest path to working system:
 
-1. **MemPalace client + sidecar reality check**
-2. **Groq provider wrapper**
+1. **Groq provider wrapper**
+2. **Ledger + KG primitives**
 3. **Convoy authn/authz primitives**
 4. **Ledger partitioning**
 5. **Polecat**
@@ -419,8 +351,6 @@ Follow this sequence for fastest path to working system:
 10. **Swarm coordinator**
 11. **Historian**
 12. **Full-stack testing**
-
-**Total**: ~20-28 days for full implementation
 
 ---
 
@@ -447,20 +377,19 @@ The living risk register is tracked in [RISKS.md](./RISKS.md). Every gate review
 
 ## See Also
 
-- [MEMPALACE.md](./MEMPALACE.md) — Persistent memory details.
 - [ROUTING.md](./ROUTING.md) — How the Mayor chooses roles.
 - [RESILIENCE.md](./RESILIENCE.md) — Handling failures and outages.
+- [KNOWLEDGE_GRAPH.md](./KNOWLEDGE_GRAPH.md) — KG schema, MIM conflict resolution.
 
 ## Architecture Corrections Required Before v1.0
 
 The documentation defines the target architecture, but the following corrections are mandatory during implementation:
 
-1. Mayor dispatch must be checkpoint-gated
-2. Convoy sender identity must use per-role keys, not shared HMAC alone
-3. MemPalace single-sidecar mode is development-only until measured under load
-4. Safeguard must run as a pool
-5. Ledger writes must be partitioned per rig
-6. Critical KG conflicts must use role precedence, not MIM
-7. Swarm queueing must prioritize dependency criticality, not FIFO only
+1. Mayor dispatch must be checkpoint-gated (local `ckpt_<uuid>`, verified by convoy bus)
+2. Convoy sender identity must use per-role Ed25519 keys, not shared HMAC alone
+3. Safeguard must run as a pool (min 2 workers in development, 4 in staging/production)
+4. Ledger writes must be partitioned per rig with per-rig mutex
+5. Critical KG conflicts must use role precedence, not MIM
+6. Swarm queueing must prioritize dependency criticality, not FIFO only
 
 These are implementation-blocking invariants, not optional hardening.

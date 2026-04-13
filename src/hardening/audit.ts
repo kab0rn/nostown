@@ -16,8 +16,12 @@ export type AuditEventType =
   | 'KEY_LOADED'
   | 'AUTH_FAILED'
   | 'AUTHZ_DENIED'
-  | 'MAYOR_ADOPTION'   // Orphan workflow adoption (OBSERVABILITY.md §Audit Logging)
-  | 'REFINERY_ESCALATION';  // Witness unanimous rejection → Refinery (ROLES.md §Refinery)
+  | 'MAYOR_ADOPTION'        // Orphan workflow adoption (OBSERVABILITY.md §Audit Logging)
+  | 'REFINERY_ESCALATION'   // Witness unanimous rejection → Refinery (ROLES.md §Refinery)
+  | 'LOCKDOWN_EARLY'        // Pre-dispatch Safeguard scan blocked bead (HARDENING.md §3.3)
+  | 'LOCKDOWN_BROADCAST'    // Lockdown broadcast to Mayor inbox
+  | 'SECURITY_VIOLATION'    // SECURITY_VIOLATION convoy received by runtime
+  | 'REVIEW_VERDICT';       // Witness REVIEW_VERDICT received by runtime
 
 export interface AuditEntry {
   ts: string;

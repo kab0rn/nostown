@@ -13,23 +13,6 @@ import { kgInsert, kgQuery } from '../../src/kg/tools';
 import type { Bead } from '../../src/types/index';
 import { Ledger } from '../../src/ledger/index';
 
-// ---------- Shared mock state ----------
-const diaryWriteCalls: string[] = [];
-let checkpointIdCounter = 0;
-
-jest.mock('../../src/mempalace/client', () => ({
-  MemPalaceClient: jest.fn().mockImplementation(() => ({
-    wakeup: jest.fn().mockResolvedValue({ l0: '', l1: '' }),
-    search: jest.fn().mockResolvedValue({ results: [] }),
-    saveCheckpoint: jest.fn().mockImplementation(async () => `checkpoint_${++checkpointIdCounter}`),
-    addDrawer: jest.fn().mockResolvedValue({ id: 'drawer_mock' }),
-    diaryRead: jest.fn().mockResolvedValue([]),
-    diaryWrite: jest.fn().mockImplementation(async (_wing: string, content: string) => {
-      diaryWriteCalls.push(content);
-    }),
-  })),
-}));
-
 // Groq mock — dispatches by system prompt keyword
 jest.mock('groq-sdk', () => {
   const mockCreate = jest.fn().mockImplementation(
@@ -159,7 +142,7 @@ describe('Gate 8: Full pipeline integration', () => {
       critical_path: true,
     });
 
-    expect(plan.checkpoint_id).toMatch(/^checkpoint_/);
+    expect(plan.checkpoint_id).toMatch(/^ckpt_[a-f0-9-]{12}$/);
     expect(plan.beads.length).toBeGreaterThanOrEqual(1);
 
     // All beads must carry the checkpoint ID (MAYOR_CHECKPOINT_MISSING guard)
@@ -211,13 +194,6 @@ describe('Gate 8: Full pipeline integration', () => {
     expect(verdict.votes.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('Witness writes diary entry after verdict', () => {
-    // diaryWriteCalls is populated by the mock when diaryWrite is called
-    const prEntry = diaryWriteCalls.find((c) => c.includes('pr-e2e-001'));
-    expect(prEntry).toBeDefined();
-    expect(prEntry).toMatch(/APPROVED|REJECTED/);
-  });
-
   it('KG can track pipeline execution triple', () => {
     kgInsert(kg, {
       subject: 'polecat_e2e',
@@ -230,33 +206,4 @@ describe('Gate 8: Full pipeline integration', () => {
     expect(triples.some((t) => t.object === 'e2e-bead-001')).toBe(true);
   });
 
-  it('Mayor CoVe escalates witness_required when past rejections exist', async () => {
-    const { MemPalaceClient } = await import('../../src/mempalace/client');
-    // Mayor's palace instance is the first one created
-    const mayorPalace = (MemPalaceClient as jest.Mock).mock.results[0]?.value;
-    if (mayorPalace) {
-      // Step 1b (AAAK manifest): no manifest stored yet
-      mayorPalace.search
-        .mockResolvedValueOnce({ results: [] })
-        // Step 3 (playbooks): empty
-        .mockResolvedValueOnce({ results: [] })
-        // Step 3c (CoVe): contains a rejection event
-        .mockResolvedValueOnce({
-          results: [{ id: 'evt_1', content: 'BEAD_RESOLVED: rejected — quality below threshold' }],
-        });
-    }
-
-    const plan = await mayor.orchestrate({
-      description: 'risky task with past rejections',
-      task_type: 'implement',
-      critical_path: true,
-    });
-
-    // All critical_path beads must have witness_required = true after CoVe escalation
-    const criticalBeads = plan.beads.filter((b) => b.critical_path);
-    expect(criticalBeads.length).toBeGreaterThan(0);
-    for (const bead of criticalBeads) {
-      expect((bead as { witness_required?: boolean }).witness_required).toBe(true);
-    }
-  });
 });

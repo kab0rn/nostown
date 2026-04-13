@@ -13,18 +13,7 @@ import { KnowledgeGraph } from '../../src/kg/index';
 import type { Bead, ReviewVerdict } from '../../src/types/index';
 import { Ledger } from '../../src/ledger/index';
 
-// ── Mocks ────────────────────────────────────────────────────────────────────
-
-jest.mock('../../src/mempalace/client', () => ({
-  MemPalaceClient: jest.fn().mockImplementation(() => ({
-    wakeup: jest.fn().mockResolvedValue({ l0: '', l1: '' }),
-    search: jest.fn().mockResolvedValue({ results: [] }),
-    saveCheckpoint: jest.fn().mockResolvedValue('ckpt-ref-001'),
-    addDrawer: jest.fn().mockResolvedValue({ id: 'drawer_ref' }),
-    diaryRead: jest.fn().mockResolvedValue([]),
-    diaryWrite: jest.fn().mockResolvedValue(undefined),
-  })),
-}));
+// ── Mocks ─────────────────────────────────────────────────────────────────────
 
 jest.mock('groq-sdk', () => {
   const mockCreate = jest.fn();

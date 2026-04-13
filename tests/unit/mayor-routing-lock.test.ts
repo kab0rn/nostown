@@ -1,6 +1,6 @@
 // Tests: Mayor playbook → routing lock
-// When a fresh playbook is found with model_hint, RoutingDispatcher selects
-// that model for matching beads (ROUTING.md §Playbook Shortcut).
+// Playbook routing requires explicit PlaybookEntry injection into the KG.
+// These tests verify: KG routing lock, complexity-based fallback (no playbook).
 
 jest.mock('groq-sdk', () => {
   const mockCreate = jest.fn();
@@ -17,7 +17,6 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { Mayor } from '../../src/roles/mayor';
-import { MemPalaceClient } from '../../src/mempalace/client';
 import { generateKeyPair } from '../../src/convoys/sign';
 
 const TEST_KEY_DIR = path.join(os.tmpdir(), `nos-rl-keys-${Date.now()}`);
@@ -74,86 +73,16 @@ describe('Mayor routing lock via RoutingDispatcher', () => {
     jest.restoreAllMocks();
   });
 
-  it('uses RoutingDispatcher model when no playbook (complexity routing)', async () => {
-    getMock()
-      .mockRejectedValueOnce(new Error('palace offline'))
-      .mockResolvedValueOnce({ choices: [{ message: { content: makeDecomposeResult('execute', 'polecat') } }] });
-
-    jest.spyOn(MemPalaceClient.prototype, 'wakeup').mockRejectedValue(new Error('offline'));
-    jest.spyOn(MemPalaceClient.prototype, 'search').mockRejectedValue(new Error('offline'));
-    jest.spyOn(MemPalaceClient.prototype, 'saveCheckpoint').mockResolvedValue('ckpt-rl-001');
+  it('uses complexity routing when no KG lock or playbook is present', async () => {
+    getMock().mockResolvedValue({
+      choices: [{ message: { content: makeDecomposeResult('execute', 'polecat') } }],
+    });
 
     const plan = await mayor.orchestrate({ description: 'Execute something' });
 
-    // Without a playbook, complexity routing for 'execute' role 'polecat' = medium → L4S
+    // Without a playbook or KG lock, complexity routing applies
     expect(plan.beads[0].model).toBeTruthy();
     expect(plan.beads.length).toBeGreaterThan(0);
-  });
-
-  it('locks model to playbook hint when fresh playbook found', async () => {
-    const playbookContent = JSON.stringify({
-      id: 'pb-001',
-      title: 'Execute Playbook',
-      task_type: 'execute',
-      steps: ['Step 1', 'Step 2'],
-      model_hint: 'llama-3.3-70b-versatile',
-      success_rate: 0.95,
-      sample_size: 50,
-      last_updated: new Date().toISOString(),
-      created_at: new Date().toISOString(),
-    });
-
-    getMock().mockResolvedValue({
-      choices: [{ message: { content: makeDecomposeResult('execute', 'polecat') } }],
-    });
-
-    jest.spyOn(MemPalaceClient.prototype, 'wakeup').mockRejectedValue(new Error('offline'));
-    const pbEntry = { id: 'pb-001', content: playbookContent, wing_id: 'wing_rig_rl-test-rig', hall_type: 'hall_advice', room_id: 'playbook_execute', created_at: new Date().toISOString() };
-    jest.spyOn(MemPalaceClient.prototype, 'search')
-      .mockResolvedValueOnce({ results: [], total: 0 }) // AAAK manifest search → no manifest
-      .mockResolvedValueOnce({ results: [pbEntry], total: 1 }) // playbook search → found
-      .mockResolvedValue({ results: [], total: 0 }); // rejection search + CoVe → none
-    jest.spyOn(MemPalaceClient.prototype, 'saveCheckpoint').mockResolvedValue('ckpt-rl-002');
-
-    const plan = await mayor.orchestrate({ description: 'Execute task', task_type: 'execute' });
-
-    // RoutingDispatcher with playbookHit for execute → should use model_hint
-    const bead = plan.beads[0];
-    expect(bead.model).toBe('llama-3.3-70b-versatile');
-  });
-
-  it('falls back to complexity routing when playbook is stale (low success_rate)', async () => {
-    const stalePlaybook = JSON.stringify({
-      id: 'pb-stale',
-      title: 'Stale Playbook',
-      task_type: 'execute',
-      steps: [],
-      model_hint: 'llama-3.3-70b-versatile',
-      success_rate: 0.60,  // below 90% threshold → stale
-      sample_size: 50,
-      last_updated: new Date().toISOString(),
-      created_at: new Date().toISOString(),
-    });
-
-    getMock().mockResolvedValue({
-      choices: [{ message: { content: makeDecomposeResult('execute', 'polecat') } }],
-    });
-
-    jest.spyOn(MemPalaceClient.prototype, 'wakeup').mockRejectedValue(new Error('offline'));
-    const stalePbEntry = { id: 'pb-stale', content: stalePlaybook, wing_id: 'wing_rig_rl-test-rig', hall_type: 'hall_advice', room_id: 'playbook_execute', created_at: new Date().toISOString() };
-    jest.spyOn(MemPalaceClient.prototype, 'search')
-      .mockResolvedValueOnce({ results: [stalePbEntry], total: 1 })
-      .mockResolvedValue({ results: [], total: 0 });
-    jest.spyOn(MemPalaceClient.prototype, 'saveCheckpoint').mockResolvedValue('ckpt-rl-003');
-
-    const plan = await mayor.orchestrate({ description: 'Execute task', task_type: 'execute' });
-
-    // Stale playbook → advisory only → activePlaybook NOT set → complexity routing
-    // execute/polecat → medium complexity → meta-llama/llama-4-scout model
-    const bead = plan.beads[0];
-    // Should NOT be the playbook's locked model (llama-3.3-70b-versatile)
-    // Complexity routing for execute → medium → llama-4-scout
-    expect(bead.model).not.toBe('llama-3.3-70b-versatile');
   });
 
   it('RoutingDispatcher uses KG lock when present', async () => {
@@ -177,13 +106,128 @@ describe('Mayor routing lock via RoutingDispatcher', () => {
       choices: [{ message: { content: makeDecomposeResult('security', 'polecat') } }],
     });
 
-    jest.spyOn(MemPalaceClient.prototype, 'wakeup').mockRejectedValue(new Error('offline'));
-    jest.spyOn(MemPalaceClient.prototype, 'search').mockRejectedValue(new Error('offline'));
-    jest.spyOn(MemPalaceClient.prototype, 'saveCheckpoint').mockResolvedValue('ckpt-rl-004');
-
     const plan = await mayor.orchestrate({ description: 'Security scan', task_type: 'security' });
 
     const secBead = plan.beads.find((b) => b.task_type === 'security');
     expect(secBead?.model).toBe('llama-3.3-70b-versatile');
+  });
+
+  it('uses playbook model hint when playbook is fresh (>90%, ≥20 samples)', async () => {
+    const { KnowledgeGraph } = await import('../../src/kg/index');
+    const kgFresh = new KnowledgeGraph(TEST_DB);
+    const today = new Date().toISOString().slice(0, 10);
+
+    kgFresh.addTriple({
+      subject: 'rig_rl-test-rig',
+      relation: 'has_playbook',
+      object: 'playbook_execute_pb_fresh01',
+      valid_from: today,
+      agent_id: 'historian',
+      metadata: { class: 'advisory', success_rate: 0.95, sample_size: 25, model_hint: 'llama-3.3-70b-versatile' },
+      created_at: new Date().toISOString(),
+    });
+    kgFresh.close();
+
+    getMock().mockResolvedValue({
+      choices: [{ message: { content: makeDecomposeResult('execute', 'polecat') } }],
+    });
+
+    const plan = await mayor.orchestrate({ description: 'Execute task', task_type: 'execute' });
+
+    const bead = plan.beads.find((b) => b.task_type === 'execute');
+    expect(bead?.model).toBe('llama-3.3-70b-versatile');
+  });
+
+  it('ignores playbook when success_rate <= 0.90', async () => {
+    const { KnowledgeGraph } = await import('../../src/kg/index');
+    const kgLow = new KnowledgeGraph(TEST_DB);
+    const today = new Date().toISOString().slice(0, 10);
+
+    kgLow.addTriple({
+      subject: 'rig_rl-test-rig',
+      relation: 'has_playbook',
+      object: 'playbook_feature_pb_low01',
+      valid_from: today,
+      agent_id: 'historian',
+      metadata: { class: 'advisory', success_rate: 0.85, sample_size: 30, model_hint: 'llama-3.3-70b-versatile' },
+      created_at: new Date().toISOString(),
+    });
+    kgLow.close();
+
+    getMock().mockResolvedValue({
+      choices: [{ message: { content: makeDecomposeResult('feature', 'polecat') } }],
+    });
+
+    const plan = await mayor.orchestrate({ description: 'Feature task', task_type: 'feature' });
+
+    // Playbook ignored — complexity routing used (feature = medium → llama-4-scout)
+    const bead = plan.beads.find((b) => b.task_type === 'feature');
+    expect(bead?.model).not.toBe('llama-3.3-70b-versatile');
+  });
+
+  it('ignores playbook when sample_size < 20', async () => {
+    const { KnowledgeGraph } = await import('../../src/kg/index');
+    const kgSmall = new KnowledgeGraph(TEST_DB);
+    const today = new Date().toISOString().slice(0, 10);
+
+    kgSmall.addTriple({
+      subject: 'rig_rl-test-rig',
+      relation: 'has_playbook',
+      object: 'playbook_refactor_pb_small01',
+      valid_from: today,
+      agent_id: 'historian',
+      metadata: { class: 'advisory', success_rate: 0.95, sample_size: 10, model_hint: 'llama-3.3-70b-versatile' },
+      created_at: new Date().toISOString(),
+    });
+    kgSmall.close();
+
+    getMock().mockResolvedValue({
+      choices: [{ message: { content: makeDecomposeResult('refactor', 'polecat') } }],
+    });
+
+    const plan = await mayor.orchestrate({ description: 'Refactor task', task_type: 'refactor' });
+
+    // Playbook ignored — complexity routing used
+    const bead = plan.beads.find((b) => b.task_type === 'refactor');
+    expect(bead?.model).not.toBe('llama-3.3-70b-versatile');
+  });
+
+  it('ignores playbook when active Safeguard lockdown exists', async () => {
+    const { KnowledgeGraph } = await import('../../src/kg/index');
+    const kgLock = new KnowledgeGraph(TEST_DB);
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Write a fresh playbook that would otherwise qualify
+    kgLock.addTriple({
+      subject: 'rig_rl-test-rig',
+      relation: 'has_playbook',
+      object: 'playbook_execute_pb_lockdown01',
+      valid_from: today,
+      agent_id: 'historian',
+      metadata: { class: 'advisory', success_rate: 0.97, sample_size: 50, model_hint: 'llama-3.3-70b-versatile' },
+      created_at: new Date().toISOString(),
+    });
+
+    // Write an active lockdown
+    kgLock.addTriple({
+      subject: 'lockdown_test0001',
+      relation: 'triggered_by',
+      object: 'eval_usage',
+      valid_from: today,
+      agent_id: 'safeguard_0',
+      metadata: { class: 'advisory', violations: [{ rule: 'eval_usage', detail: 'test' }] },
+      created_at: new Date().toISOString(),
+    });
+    kgLock.close();
+
+    getMock().mockResolvedValue({
+      choices: [{ message: { content: makeDecomposeResult('execute', 'polecat') } }],
+    });
+
+    const plan = await mayor.orchestrate({ description: 'Execute during lockdown', task_type: 'execute' });
+
+    // Playbook should be ignored due to lockdown
+    const bead = plan.beads.find((b) => b.task_type === 'execute');
+    expect(bead?.model).not.toBe('llama-3.3-70b-versatile');
   });
 });

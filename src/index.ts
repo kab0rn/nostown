@@ -1,9 +1,14 @@
 // NOS Town — Main Entry Point
 
 import { Mayor } from './roles/mayor.js';
+import { WorkerRuntime } from './runtime/worker-loop.js';
 import { HeartbeatMonitor } from './monitor/heartbeat.js';
+import { Historian } from './roles/historian.js';
 import { runFromStdin } from './swarm/bridge.js';
 import * as readline from 'readline';
+import * as fs from 'fs';
+import * as path from 'path';
+import cron from 'node-cron';
 import type { HeartbeatEvent } from './types/index.js';
 
 const AGENT_ID = process.env.NOS_AGENT_ID ?? 'mayor_01';
@@ -14,6 +19,15 @@ function checkEnv(): void {
   if (!GROQ_API_KEY) {
     console.error('[NOS Town] ERROR: GROQ_API_KEY environment variable is required');
     console.error('  Set it in .env or export GROQ_API_KEY=gsk_...');
+    process.exit(1);
+  }
+
+  // HARDENING.md §3.1: fail fast if sender key is missing
+  const keyDir = process.env.NOS_ROLE_KEY_DIR ?? 'keys';
+  const keyFile = path.resolve(keyDir, `${AGENT_ID}.key`);
+  if (!fs.existsSync(keyFile)) {
+    console.error(`[NOS Town] ERROR: No sender key found at ${keyFile}`);
+    console.error(`  Run: npx tsx scripts/gen-keys.ts --agent ${AGENT_ID}`);
     process.exit(1);
   }
 }
@@ -38,8 +52,7 @@ async function orchestrateTask(description: string, mayor: Mayor): Promise<void>
 }
 
 function showStatus(): void {
-  const palaceUrl = process.env.MEMPALACE_URL ?? 'http://localhost:7474';
-  console.log(`Mayor: ${AGENT_ID}   Rig: ${RIG_NAME}   Palace: ${palaceUrl}`);
+  console.log(`Mayor: ${AGENT_ID}   Rig: ${RIG_NAME}`);
 }
 
 function showHelp(): void {
@@ -49,7 +62,6 @@ function showHelp(): void {
     `Usage:\n` +
     `  nt                  Interactive session\n` +
     `  nt <task>           Orchestrate any task — plain text, no syntax\n` +
-    `  nt up               Start MemPalace server\n` +
     `  nt status           Show system status\n` +
     `\n` +
     `Examples:\n` +
@@ -72,8 +84,7 @@ function nextLine(rl: readline.Interface, prompt: string): Promise<string | null
 }
 
 async function runRepl(mayor: Mayor): Promise<void> {
-  const palaceUrl = process.env.MEMPALACE_URL ?? 'http://localhost:7474';
-  console.log(`NOS Town  ${AGENT_ID} / ${RIG_NAME}  ${palaceUrl}`);
+  console.log(`NOS Town  ${AGENT_ID} / ${RIG_NAME}`);
   console.log(`Type a task, 'status', or 'exit'.\n`);
 
   const rl = readline.createInterface({
@@ -119,6 +130,15 @@ async function main(): Promise<void> {
     emitHeartbeat: heartbeatHandler,
   });
 
+  const runtime = new WorkerRuntime({
+    rigName: RIG_NAME,
+    groqApiKey: GROQ_API_KEY,
+    polecatCount: Number(process.env.NOS_POLECAT_COUNT ?? 4),
+    safeguardPoolSize: Number(process.env.SAFEGUARD_POOL_SIZE ?? 2),
+    pollIntervalMs: Number(process.env.NOS_POLL_INTERVAL_MS ?? 500),
+    onEvent: heartbeatHandler,
+  });
+
   const monitor = new HeartbeatMonitor({
     onEvent: heartbeatHandler,
     polecatStallThresholdMs: 10 * 60 * 1000,
@@ -128,6 +148,22 @@ async function main(): Promise<void> {
   monitor.registerMayor(mayor);
   monitor.start();
   mayor.startHeartbeat();
+  await runtime.start();
+
+  // Wire Historian cron job (HISTORIAN_CRON env var, default: 2am nightly)
+  const historianCron = process.env.HISTORIAN_CRON ?? '0 2 * * *';
+  const historian = new Historian({
+    agentId: 'historian_01',
+    groqApiKey: GROQ_API_KEY,
+  });
+  let historianTask: cron.ScheduledTask | null = null;
+  if (cron.validate(historianCron)) {
+    historianTask = cron.schedule(historianCron, () => {
+      void historian.runNightly(RIG_NAME);
+    });
+  } else {
+    console.warn(`[NOS Town] Invalid HISTORIAN_CRON schedule: "${historianCron}" — historian disabled`);
+  }
 
   try {
     if (first === '--interactive' || first === '-i') {
@@ -146,6 +182,11 @@ async function main(): Promise<void> {
         console.error('Direct swarm mode not yet implemented. Use --stdin-params.');
         process.exit(1);
       }
+    } else if (first === 'historian') {
+      // One-shot Historian run: `nt historian` or `nos historian`
+      const rigArg = args[1] ?? RIG_NAME;
+      console.log(`[NOS Town] Running Historian nightly pipeline for rig: ${rigArg}`);
+      await historian.runNightly(rigArg);
     } else if (first === 'task') {
       // Legacy compatibility: `nos task <description>`
       const description = args.slice(1).join(' ');
@@ -164,6 +205,8 @@ async function main(): Promise<void> {
       showHelp();
     }
   } finally {
+    historianTask?.stop();
+    await runtime.stop();
     mayor.stopHeartbeat();
     monitor.stop();
     mayor.close();
