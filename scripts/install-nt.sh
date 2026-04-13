@@ -5,7 +5,7 @@
 #   ./scripts/install-nt.sh             # installs to ~/.local/bin/nt
 #   ./scripts/install-nt.sh /usr/local/bin
 #
-# After install, `nt up` starts MemPalace and `nt <task>` orchestrates tasks.
+# After install, `nt <task>` orchestrates tasks and `nt` opens an interactive session.
 
 set -euo pipefail
 
@@ -38,6 +38,6 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
     echo ""
 fi
 
-echo "  nt up       Start MemPalace server"
+echo "  nt status   Show service health"
 echo "  nt          Interactive session"
 echo "  nt <task>   Orchestrate a task"
