@@ -19,6 +19,22 @@ import type { Bead, ConvoyMessage, HeartbeatEvent, ReviewVerdict } from '../type
 import { auditLog } from '../hardening/audit.js';
 import type { Mayor } from '../roles/mayor.js';
 
+export interface PolecatStatus {
+  agentId: string;
+  busy: boolean;
+  currentBeadId: string | null;
+  lastActivity: Date;
+}
+
+export interface RuntimeStatus {
+  running: boolean;
+  dispatchPaused: boolean;
+  polecats: PolecatStatus[];
+  activePolecat: number;
+  maxInflightBeads: number;
+  safeguardPoolSize: number;
+}
+
 export interface WorkerRuntimeConfig {
   rigName: string;
   groqApiKey?: string;
@@ -610,6 +626,28 @@ export class WorkerRuntime {
         console.error(`[WorkerRuntime] Failed to re-queue stalled bead ${bead_id}: ${String(err)}`);
       }
     }
+  }
+
+  // ── Status query (for CLI display) ────────────────────────────────────────
+
+  /**
+   * Return a snapshot of runtime state for `nt status` / `nt dash` display.
+   * Non-destructive — reads in-memory state only, no I/O.
+   */
+  getStatus(): RuntimeStatus {
+    return {
+      running: this.running,
+      dispatchPaused: this.dispatchPaused,
+      polecats: this.polecats.map((slot, i) => ({
+        agentId: `polecat_0${i + 1}`,
+        busy: slot.busy,
+        currentBeadId: slot.worker.currentBeadId,
+        lastActivity: slot.worker.lastActivity,
+      })),
+      activePolecat: this.activePolecat(),
+      maxInflightBeads: this.maxInflightBeads,
+      safeguardPoolSize: this.safeguardPool.workerCount,
+    };
   }
 
   // ── Lockdown broadcast ─────────────────────────────────────────────────────
