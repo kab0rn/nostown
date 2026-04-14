@@ -111,14 +111,15 @@ export class RoutingDispatcher {
    * Returns true only when:
    *   - success_rate > 0.90
    *   - sample_size >= 20
-   *   - no active Safeguard lockdown for this task class
+   *   - no active Safeguard lockdown for this task class (task-class-scoped, not global)
    */
-  isPlaybookFresh(successRate: number, sampleSize: number, _taskType: string): boolean {
+  isPlaybookFresh(successRate: number, sampleSize: number, taskType: string): boolean {
     if (successRate <= 0.90) return false;
     if (sampleSize < 20) return false;
 
-    // Block playbook use during any active Safeguard lockdown
-    if (this.kg.hasActiveLockdown()) return false;
+    // Block playbook use only when there is an active lockdown matching this task class.
+    // A lockdown on 'security' tasks should not suppress 'unit_test' playbooks.
+    if (this.kg.hasActiveLockdown(taskType)) return false;
 
     return true;
   }

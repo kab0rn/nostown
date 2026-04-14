@@ -157,7 +157,13 @@ export class SafeguardWorker {
     learnedPatterns.push(patternKey);
   }
 
-  async scan(diff: string): Promise<ScanResult> {
+  /**
+   * Scan a diff for security violations.
+   * @param diff - The code diff or content to scan.
+   * @param taskType - Optional task class (e.g. 'security', 'auth') written to the lockdown KG
+   *   triple so hasActiveLockdown() can filter per-task-class rather than globally.
+   */
+  async scan(diff: string, taskType?: string): Promise<ScanResult> {
     const rules = getOrLoadRules(this.rulesetCacheTtlMs);
     const violations: ScanResult['violations'] = [];
 
@@ -175,7 +181,7 @@ export class SafeguardWorker {
     // If any critical violations found statically, trigger LOCKDOWN immediately
     const hasCritical = violations.some((v) => v.severity === 'critical');
     if (hasCritical) {
-      const lockdown = this.emitLockdown(violations.filter((v) => v.severity === 'critical'));
+      const lockdown = this.emitLockdown(violations.filter((v) => v.severity === 'critical'), taskType);
       return { approved: false, violations, lockdown };
     }
 
@@ -208,7 +214,7 @@ export class SafeguardWorker {
     const approved = violations.filter((v) => v.severity === 'critical' || v.severity === 'high').length === 0;
 
     if (criticalFromLlm.length > 0) {
-      const lockdown = this.emitLockdown(criticalFromLlm);
+      const lockdown = this.emitLockdown(criticalFromLlm, taskType);
       return { approved: false, violations, lockdown };
     }
 
@@ -218,8 +224,9 @@ export class SafeguardWorker {
   /**
    * Emit LOCKDOWN signal: write KG triple and log hard stop.
    * Per ROLES.md §Safeguard: every LOCKDOWN written as KG triple.
+   * The task_type is stored in metadata so hasActiveLockdown() can filter per task class.
    */
-  private emitLockdown(criticalViolations: ScanResult['violations']): ScanResult['lockdown'] {
+  private emitLockdown(criticalViolations: ScanResult['violations'], taskType?: string): ScanResult['lockdown'] {
     const lockdownId = `lockdown_${uuidv4().slice(0, 8)}`;
     const reason = criticalViolations.map((v) => v.rule).join(', ');
     const today = new Date().toISOString().slice(0, 10);
@@ -227,6 +234,7 @@ export class SafeguardWorker {
     console.error(`[SafeguardWorker:${this.workerId}] *** LOCKDOWN TRIGGERED *** ${lockdownId}: ${reason}`);
 
     // Write KG triple: lockdown_{id} → triggered_by → {vuln_type} (ROLES.md §Safeguard step 4)
+    // task_type in metadata enables task-class-scoped lockdown queries by the routing dispatcher.
     try {
       this.kg.addTriple({
         subject: lockdownId,
@@ -236,6 +244,7 @@ export class SafeguardWorker {
         agent_id: this.workerId,
         metadata: {
           class: 'critical',
+          ...(taskType ? { task_type: taskType } : {}),
           violations: criticalViolations.map((v) => ({ rule: v.rule, detail: v.detail })),
         },
         created_at: new Date().toISOString(),
@@ -283,6 +292,8 @@ interface ScanQueueEntry {
   diff: string;
   /** Higher number = higher priority. critical_path beads use 10; default is 0. */
   priority: number;
+  /** Task class for lockdown KG metadata (enables per-task-class lockdown filtering). */
+  taskType?: string;
   /** Number of worker failures for this entry — reject after exhausting pool. */
   failCount: number;
   resolve: (result: ScanResult) => void;
@@ -316,10 +327,11 @@ export class SafeguardPool {
   /**
    * Scan a diff, queuing if all workers are busy.
    * @param priority Higher = higher priority; critical_path beads should pass 10.
+   * @param taskType Optional task class forwarded to the lockdown KG triple.
    */
-  scan(diff: string, priority = 0): Promise<ScanResult> {
+  scan(diff: string, priority = 0, taskType?: string): Promise<ScanResult> {
     return new Promise<ScanResult>((resolve, reject) => {
-      const entry: ScanQueueEntry = { diff, priority, failCount: 0, resolve, reject };
+      const entry: ScanQueueEntry = { diff, priority, taskType, failCount: 0, resolve, reject };
       this.enqueue(entry);
       this.dispatch();
     });
@@ -344,7 +356,7 @@ export class SafeguardPool {
 
   private runEntry(worker: SafeguardWorker, entry: ScanQueueEntry): void {
     const start = Date.now();
-    worker.scan(entry.diff).then(
+    worker.scan(entry.diff, entry.taskType).then(
       (result) => {
         safeguardScanLatencyMs.record(Date.now() - start);
         this.availableWorkers.push(worker);

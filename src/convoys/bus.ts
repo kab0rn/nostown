@@ -73,12 +73,38 @@ export class ConvoyBus {
   }
 
   /**
-   * Get the next monotonically increasing sequence number for a sender.
+   * Allocate the next monotonically increasing sequence number for a sender.
+   *
+   * Does NOT mutate seqCounters — send() is the commit point that updates the counter
+   * and enforces the monotonicity gate.  Writing to KG here provides crash-safety: if
+   * the process dies between getNextSeq() and send(), the KG already holds the allocated
+   * seq so the next restart never reuses it (HARDENING.md §3.2).
    */
   getNextSeq(senderId: string): number {
     const current = this.seqCounters.get(senderId) ?? 0;
     const next = current + 1;
-    this.seqCounters.set(senderId, next);
+
+    // Persist the allocation to KG for crash-safety (non-fatal)
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+      const existing = this.kg.queryTriples('convoy_seq', undefined, 'last_seq')
+        .filter((t) => t.object.startsWith(`${senderId}:`));
+      for (const t of existing) {
+        this.kg.invalidateTriple(t.id!, today, 'superseded by new allocation');
+      }
+      this.kg.addTriple({
+        subject: 'convoy_seq',
+        relation: 'last_seq',
+        object: `${senderId}:${next}`,
+        valid_from: today,
+        agent_id: senderId,
+        metadata: { class: 'advisory' },
+        created_at: new Date().toISOString(),
+      });
+    } catch {
+      // KG write failure is non-fatal — seq is still enforced in-memory this session
+    }
+
     return next;
   }
 

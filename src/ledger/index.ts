@@ -5,7 +5,24 @@ import path from 'path';
 import { createHash } from 'crypto';
 import lockfile from 'proper-lockfile';
 import { v4 as uuidv4 } from 'uuid';
+import { z } from 'zod';
 import type { Bead, BeadOutcome } from '../types/index.js';
+
+// ── Bead schema (HARDENING.md §2.1) ──────────────────────────────────────────
+// Validates required fields before any ledger write.
+// Optional fields are allowed through without constraint.
+const BeadWriteSchema = z.object({
+  bead_id: z.string().min(1),
+  role: z.enum(['polecat', 'witness', 'safeguard', 'mayor', 'historian', 'refinery']),
+  task_type: z.string().min(1),
+  model: z.string().min(1),
+  status: z.enum(['pending', 'in_progress', 'done', 'failed', 'blocked']),
+  needs: z.array(z.string()),
+  critical_path: z.boolean(),
+  witness_required: z.boolean(),
+  fan_out_weight: z.number().nonnegative(),
+  created_at: z.string().min(1),
+});
 
 const RIGS_ROOT = process.env.NOS_RIGS_ROOT ?? 'rigs';
 

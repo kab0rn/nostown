@@ -42,11 +42,10 @@ const payload: ConvoyPayload = {
 describe('Sequence monotonicity', () => {
   it('accepts convoy with seq=1', async () => {
     const bus = new ConvoyBus('replay-test');
-    const privKey = loadPrivateKey('mayor_replay');
-    const convoy = await buildSignedConvoy(makeHeader(1), payload, privKey);
 
-    // getNextSeq should return 1 on first call
-    const seq = bus.getNextSeq('mayor_replay');
+    // Use a sender ID that is isolated to this test to avoid polluting mayor_replay's
+    // KG-persisted seq counter (getNextSeq now writes to KG for crash-safety).
+    const seq = bus.getNextSeq('seq-check-sender');
     expect(seq).toBe(1);
   });
 

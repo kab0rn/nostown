@@ -34,6 +34,7 @@ export interface Bead {
 export type ConvoyType =
   // Mayor
   | 'BEAD_DISPATCH' | 'SWARM_ABORT' | 'CAPACITY_UPDATE' | 'LOCKDOWN_BROADCAST'
+  | 'CONVOY_BLOCKED'  // predecessor failed — bead blocked (HARDENING.md §2.3)
   // Polecat
   | 'BEAD_STATUS' | 'DISCOVERY' | 'BLOCKED' | 'PATCH_READY'
   // Witness
