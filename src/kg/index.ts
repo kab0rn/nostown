@@ -348,6 +348,38 @@ export class KnowledgeGraph {
   }
 
   /**
+   * Query all active triples for a given relation (e.g. 'locked_to', 'demoted_from').
+   * Used by the CLI query engine to build a system snapshot without knowing subjects.
+   */
+  queryByRelation(relation: string, asOf?: string): KGTriple[] {
+    const date = asOf ?? new Date().toISOString().slice(0, 10);
+    const rows = this.db.prepare(`
+      SELECT * FROM triples
+      WHERE relation = @relation
+        AND valid_from <= @date
+        AND (valid_to IS NULL OR valid_to > @date)
+      ORDER BY valid_from DESC, created_at DESC
+    `).all({ relation, date }) as Array<Record<string, unknown>>;
+    return rows.map(this.rowToTriple.bind(this));
+  }
+
+  /**
+   * Query recent triples (any relation) ordered by creation time — for snapshot/trail display.
+   * Returns up to `limit` triples across all subjects/relations.
+   */
+  queryRecent(limit = 20, asOf?: string): KGTriple[] {
+    const date = asOf ?? new Date().toISOString().slice(0, 10);
+    const rows = this.db.prepare(`
+      SELECT * FROM triples
+      WHERE valid_from <= @date
+        AND (valid_to IS NULL OR valid_to > @date)
+      ORDER BY created_at DESC
+      LIMIT @limit
+    `).all({ date, limit }) as Array<Record<string, unknown>>;
+    return rows.map(this.rowToTriple.bind(this));
+  }
+
+  /**
    * Compute state hash of last 100 triple IDs + created_at
    */
   computeStateHash(): string {

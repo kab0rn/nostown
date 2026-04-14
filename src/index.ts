@@ -23,6 +23,7 @@ import {
   recordHeartbeat, recordPlanStart, recordBeadComplete,
 } from './cli/trail.js';
 import { Dashboard } from './cli/dashboard.js';
+import { classifyInput, buildSnapshot, answerQuery } from './cli/query.js';
 
 const AGENT_ID     = process.env.NOS_AGENT_ID ?? 'mayor_01';
 const RIG_NAME     = process.env.NOS_RIG ?? 'default';
@@ -121,6 +122,72 @@ function heartbeatHandler(event: HeartbeatEvent): void {
       `${green('✓')} ${gray('[Heartbeat]')} ${green('PROVIDER_RECOVERED')}\n`,
     );
   }
+}
+
+// ── Query answering ────────────────────────────────────────────────────────────
+
+/**
+ * Answer a natural-language query about the NOS Town system directly.
+ * Gathers a live system snapshot and calls Groq with it as RAG context.
+ */
+async function handleQuery(
+  question: string,
+  runtime: WorkerRuntime,
+): Promise<void> {
+  const kgPath = process.env.NOS_KG_PATH;
+  const spinner = new Spinner(`${dim('querying system')}…`);
+  spinner.start();
+  try {
+    const snapshot = buildSnapshot(RIG_NAME, AGENT_ID, runtime, kgPath);
+    const answer   = await answerQuery(question, snapshot, GROQ_API_KEY!);
+    spinner.stop();
+    process.stdout.write(`\n${answer.trim()}\n\n`);
+  } catch (err) {
+    spinner.stop(`${STATUS_ICON.failed} Query failed: ${red(String(err))}`);
+  }
+}
+
+/**
+ * Prompt the user to clarify whether their input is a query or a task.
+ * Returns 'query', 'task', or null (if user aborts / EOF).
+ */
+function askDisambiguate(input: string): Promise<'query' | 'task' | null> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const prompt =
+      `\n${gray('  Is that a ')}${cyan('query')}${gray(' (about the system) or a ')}${cyan('task')}${gray(' (to orchestrate)?')}\n` +
+      `  ${gray('q = query, t = task, enter = task:')} `;
+    rl.question(prompt, (answer) => {
+      rl.close();
+      const a = answer.trim().toLowerCase();
+      if (a === 'q' || a === 'query') resolve('query');
+      else if (a === 't' || a === 'task') resolve('task');
+      else if (a === '') resolve('task');  // default: treat as task
+      else resolve(null);
+    });
+    rl.once('close', () => resolve(null));
+  });
+}
+
+/**
+ * Route user input: detect query vs task, handle accordingly.
+ * Returns true if handled as a query, false if should proceed as task.
+ */
+async function routeInput(
+  input: string,
+  runtime: WorkerRuntime,
+): Promise<'query' | 'task'> {
+  const cls = classifyInput(input);
+
+  if (cls === 'query') return 'query';
+  if (cls === 'task')  return 'task';
+
+  // Ambiguous — show what we detected and ask
+  process.stdout.write(
+    `\n${gray('  ')}${yellow('?')}  ${dim(input.slice(0, 60))}\n`,
+  );
+  const choice = await askDisambiguate(input);
+  return choice === 'query' ? 'query' : 'task';
 }
 
 // ── Orchestration with rich output ─────────────────────────────────────────────
@@ -264,7 +331,6 @@ async function runRepl(
         process.stdout.write(renderBeadHistory(RIG_NAME, 10));
       }
     } else if (cmd === 'dash') {
-      // Brief inline snapshot — full live dash exits REPL
       process.stdout.write(
         renderStatus({ agentId: AGENT_ID, rigName: RIG_NAME, runtime, historianCron, uptime: PROCESS_START }) +
         renderQueue(RIG_NAME) +
@@ -273,7 +339,13 @@ async function runRepl(
     } else if (cmd === 'help') {
       showHelp();
     } else {
-      await orchestrateTask(input, mayor);
+      // Route: detect query vs. task, with disambiguation prompt for ambiguous input
+      const route = await routeInput(input, runtime);
+      if (route === 'query') {
+        await handleQuery(input, runtime);
+      } else {
+        await orchestrateTask(input, mayor);
+      }
     }
   }
 
@@ -426,7 +498,7 @@ async function main(): Promise<void> {
       }
 
     } else if (first === 'task') {
-      // Legacy: `nos task <description>`
+      // Legacy: `nos task <description>` — always treated as a task (no classification)
       const description = args.slice(1).join(' ');
       if (!description) {
         process.stderr.write('Usage: nos task <description>\n');
@@ -435,8 +507,14 @@ async function main(): Promise<void> {
       await orchestrateTask(description, mayor);
 
     } else if (first !== undefined) {
-      // Plain text task — no prefix required
-      await orchestrateTask(args.join(' '), mayor);
+      // Plain text — detect query vs. task
+      const input = args.join(' ');
+      const route = await routeInput(input, runtime);
+      if (route === 'query') {
+        await handleQuery(input, runtime);
+      } else {
+        await orchestrateTask(input, mayor);
+      }
 
     } else if (process.stdin.isTTY) {
       // `nt` with no args in a terminal → REPL
