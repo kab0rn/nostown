@@ -4,6 +4,7 @@ import { GroqProvider } from '../groq/provider.js';
 import { KnowledgeGraph } from '../kg/index.js';
 import type { ReviewVerdict, InferenceParams } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
+import { recordWitnessVerdict } from '../telemetry/metrics.js';
 
 export interface WitnessConfig {
   agentId: string;
@@ -72,6 +73,9 @@ export class Witness {
         comment: v.comment,
       })),
     };
+
+    // Feed into OTel witness_approval_rate gauge (OBSERVABILITY.md §1)
+    recordWitnessVerdict(approved);
 
     // Per-judge KG vote logging for audit trail (ROLES.md §Quality Tuning)
     const today = new Date().toISOString().slice(0, 10);

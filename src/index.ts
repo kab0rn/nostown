@@ -16,6 +16,18 @@ const AGENT_ID = process.env.NOS_AGENT_ID ?? 'mayor_01';
 const RIG_NAME = process.env.NOS_RIG ?? 'default';
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
+function checkDir(envVar: string, fallback: string, label: string): void {
+  const dir = path.resolve(process.env[envVar] ?? fallback);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK);
+  } catch {
+    console.error(`[NOS Town] ERROR: ${label} directory not writable: ${dir}`);
+    console.error(`  Set ${envVar} to a writable path or fix permissions.`);
+    process.exit(1);
+  }
+}
+
 function checkEnv(): void {
   if (!GROQ_API_KEY) {
     console.error('[NOS Town] ERROR: GROQ_API_KEY environment variable is required');
@@ -29,6 +41,19 @@ function checkEnv(): void {
   if (!fs.existsSync(keyFile)) {
     console.error(`[NOS Town] ERROR: No sender key found at ${keyFile}`);
     console.error(`  Run: npx tsx scripts/gen-keys.ts --agent ${AGENT_ID}`);
+    process.exit(1);
+  }
+
+  // Validate writable data directories at startup so failures surface immediately
+  checkDir('NOS_RIGS_ROOT', 'rigs', 'NOS_RIGS_ROOT (ledger)');
+  checkDir('NOS_AUDIT_DIR', 'nos/audit', 'NOS_AUDIT_DIR (audit log)');
+  const kgDir = path.dirname(path.resolve(process.env.NOS_KG_PATH ?? 'kg/knowledge_graph.sqlite'));
+  try {
+    fs.mkdirSync(kgDir, { recursive: true });
+    fs.accessSync(kgDir, fs.constants.W_OK);
+  } catch {
+    console.error(`[NOS Town] ERROR: KG directory not writable: ${kgDir}`);
+    console.error('  Set NOS_KG_PATH to a writable path.');
     process.exit(1);
   }
 }
@@ -149,12 +174,21 @@ async function main(): Promise<void> {
     refinery,
   });
 
+  // Configurable rate limits (Gap 2.2): NOS_MAX_INFLIGHT_BEADS, NOS_MIN_SAFEGUARD_POOL_SIZE
+  const safeguardPoolSize = Math.max(
+    Number(process.env.NOS_MIN_SAFEGUARD_POOL_SIZE ?? 2),
+    Number(process.env.SAFEGUARD_POOL_SIZE ?? 2),
+  );
+
   const runtime = new WorkerRuntime({
     rigName: RIG_NAME,
     groqApiKey: GROQ_API_KEY,
     polecatCount: Number(process.env.NOS_POLECAT_COUNT ?? 4),
-    safeguardPoolSize: Number(process.env.SAFEGUARD_POOL_SIZE ?? 2),
+    safeguardPoolSize,
     pollIntervalMs: Number(process.env.NOS_POLL_INTERVAL_MS ?? 500),
+    maxInflightBeads: process.env.NOS_MAX_INFLIGHT_BEADS
+      ? Number(process.env.NOS_MAX_INFLIGHT_BEADS)
+      : undefined,
     onEvent: heartbeatHandler,
     mayor,
   });
@@ -185,6 +219,22 @@ async function main(): Promise<void> {
   } else {
     console.warn(`[NOS Town] Invalid HISTORIAN_CRON schedule: "${historianCron}" — historian disabled`);
   }
+
+  // Graceful shutdown on SIGINT/SIGTERM: drain in-flight beads before exit (Gap 2.3)
+  let shuttingDown = false;
+  async function gracefulShutdown(signal: string): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[NOS Town] ${signal} received — draining in-flight beads (30s max)...`);
+    historianTask?.stop();
+    await runtime.drain(30_000);
+    mayor.stopHeartbeat();
+    monitor.stop();
+    mayor.close();
+    process.exit(0);
+  }
+  process.once('SIGINT', () => void gracefulShutdown('SIGINT'));
+  process.once('SIGTERM', () => void gracefulShutdown('SIGTERM'));
 
   try {
     if (first === '--interactive' || first === '-i') {

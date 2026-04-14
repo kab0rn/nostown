@@ -7,6 +7,7 @@ import lockfile from 'proper-lockfile';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import type { Bead, BeadOutcome } from '../types/index.js';
+import { ledgerLockWaitMs } from '../telemetry/metrics.js';
 
 // ── Bead schema (HARDENING.md §2.1) ──────────────────────────────────────────
 // Validates required fields before any ledger write.
@@ -91,12 +92,14 @@ export class Ledger {
     }
 
     let release: (() => Promise<void>) | null = null;
+    const lockStart = Date.now();
     try {
       release = await lockfile.lock(filePath, {
         retries: { retries: 20, minTimeout: 20, maxTimeout: 200, factor: 1.5, randomize: true },
         stale: 15000,
         realpath: false,
       });
+      ledgerLockWaitMs.record(Date.now() - lockStart, { rig: rigName });
       fs.appendFileSync(filePath, JSON.stringify(beadWithChecksum) + '\n', 'utf8');
     } finally {
       await release?.();
@@ -191,6 +194,38 @@ export class Ledger {
       updated_at: new Date().toISOString(),
     };
     await this.appendBead(rigName, updated);
+  }
+
+  /**
+   * Check if a successful bead with identical task_description + needs exists within the
+   * last cacheTtlMs milliseconds (default: 7 days). Used for bead result caching (Enh 3.2).
+   * Returns the most recent matching bead, or null if none found.
+   */
+  findCachedBead(
+    taskDescription: string,
+    needs: string[],
+    rigName: string,
+    cacheTtlMs = 7 * 24 * 60 * 60 * 1000,
+  ): Bead | null {
+    const beads = this.readBeads(rigName);
+    const cutoff = new Date(Date.now() - cacheTtlMs).toISOString();
+    // Group by bead_id and keep last record (most recent state)
+    const latestByBead = new Map<string, Bead>();
+    for (const b of beads) {
+      latestByBead.set(b.bead_id, b);
+    }
+    const needsKey = [...needs].sort().join(',');
+    for (const bead of latestByBead.values()) {
+      if (
+        bead.outcome === 'SUCCESS' &&
+        bead.task_description === taskDescription &&
+        [...(bead.needs ?? [])].sort().join(',') === needsKey &&
+        (bead.updated_at ?? bead.created_at) >= cutoff
+      ) {
+        return bead;
+      }
+    }
+    return null;
   }
 
   /**

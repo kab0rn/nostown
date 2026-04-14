@@ -54,6 +54,9 @@ export class Historian {
     // 3. Update KG routing based on model performance
     await this.updateRoutingKG(patterns);
 
+    // 3b. Auto-validate promoted models: demote if witness approval rate dropped (Enh 3.3)
+    await this.autoValidatePromotedModels(beads);
+
     // 4. Record rig wing in KG for future cross-rig discovery
     await this.recordRigWing(rigName);
 
@@ -340,6 +343,71 @@ export class Historian {
         });
       }
     }
+  }
+
+  /**
+   * Auto-validate models promoted in the last 30 days (Enh 3.3).
+   * If a model's witness approval rate from the last 30 days' beads drops below
+   * MIN_WITNESS_APPROVAL_RATE (0.6), write a demoted_from triple to revoke the promotion.
+   */
+  private async autoValidatePromotedModels(beads: Bead[]): Promise<void> {
+    const MIN_WITNESS_APPROVAL_RATE = 0.6;
+    const MIN_SAMPLE_SIZE = 5; // Need at least 5 witness-reviewed beads to auto-demote
+    const today = new Date().toISOString().slice(0, 10);
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    // Query KG for models currently locked_to a task type (promoted)
+    const allTriples = this.kg.queryTriples('', today, 'locked_to');
+    // queryTriples requires a non-empty subject; fetch all using a broader approach
+    // We collect locked_to triples from per-model subjects that exist in beads
+    const promotedModels = new Set<string>();
+    for (const bead of beads) {
+      if (bead.model) promotedModels.add(bead.model);
+    }
+
+    for (const model of promotedModels) {
+      const lockTriples = this.kg.queryTriples(model, today, 'locked_to');
+      if (lockTriples.length === 0) continue; // Not promoted
+
+      // Check witness approval rate for this model over the last 30 days
+      const modelBeads = beads.filter(
+        (b) =>
+          b.model === model &&
+          b.witness_required &&
+          (b.updated_at ?? b.created_at) >= thirtyDaysAgo,
+      );
+      if (modelBeads.length < MIN_SAMPLE_SIZE) continue; // Insufficient data
+
+      const approved = modelBeads.filter((b) => b.outcome === 'SUCCESS' && b.metrics?.witness_score !== undefined).length;
+      const approvalRate = approved / modelBeads.length;
+
+      if (approvalRate < MIN_WITNESS_APPROVAL_RATE) {
+        console.warn(
+          `[Historian:${this.agentId}] Auto-demoting model ${model}: ` +
+          `witness approval ${(approvalRate * 100).toFixed(1)}% < ${MIN_WITNESS_APPROVAL_RATE * 100}% ` +
+          `(${approved}/${modelBeads.length} over 30 days)`,
+        );
+        for (const lock of lockTriples) {
+          this.kg.addTriple({
+            subject: model,
+            relation: 'demoted_from',
+            object: lock.object, // the task type it was locked to
+            valid_from: today,
+            agent_id: this.agentId,
+            metadata: {
+              class: 'critical',
+              reason: 'witness_approval_rate_below_threshold',
+              approval_rate: approvalRate,
+              sample_size: modelBeads.length,
+              promoted_lock_id: lock.id,
+            },
+            created_at: new Date().toISOString(),
+          });
+        }
+      }
+    }
+
+    void allTriples; // suppress unused-variable warning — subject='' returns empty, we query per-model
   }
 
   /**

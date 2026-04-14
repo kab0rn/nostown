@@ -13,6 +13,7 @@ import type { RefineryAnalysis } from './refinery.js';
 import { Ledger as LedgerClass } from '../ledger/index.js';
 import { DEFAULT_IN_FLIGHT_LIMITS, isRendezvousNode, detectCycles, swarmRebalanceLimits } from '../swarm/tools.js';
 import { auditLog } from '../hardening/audit.js';
+import { newTraceContext } from '../telemetry/tracer.js';
 import { v4 as uuidv4 } from 'uuid';
 
 export type HeartbeatEmitter = (event: HeartbeatEvent) => void;
@@ -180,11 +181,15 @@ export class Mayor {
     // 4. Generate ephemeral checkpoint UUID (local only, not persisted to KG)
     const checkpointId = `ckpt_${uuidv4().slice(0, 12)}`;
 
-    // 5. Attach checkpoint ID to all beads
+    // Generate OTel trace context for this plan (OBSERVABILITY.md §2 — distributed tracing)
+    const traceCtx = newTraceContext();
+
+    // 5. Attach checkpoint ID and trace_id to all beads
     const planId = `plan_${uuidv4().slice(0, 8)}`;
     const beadsWithCheckpoint = beads.map((b) => ({
       ...b,
       plan_checkpoint_id: checkpointId,
+      trace_id: traceCtx.trace_id,
     }));
 
     // 6. Write beads to ledger
@@ -505,7 +510,7 @@ Output empty corrections array if the plan is correct.`,
       recipient: bead.role,
       timestamp: new Date().toISOString(),
       seq,
-      trace_id: bead.plan_checkpoint_id,
+      trace_id: bead.trace_id ?? bead.plan_checkpoint_id,
     };
 
     const payload = {
