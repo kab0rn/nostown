@@ -13,8 +13,11 @@
 import { Polecat } from '../roles/polecat.js';
 import { Witness } from '../roles/witness.js';
 import { SafeguardPool } from '../roles/safeguard.js';
+import { Refinery } from '../roles/refinery.js';
 import { Ledger } from '../ledger/index.js';
 import { ConvoyBus } from '../convoys/bus.js';
+import { KnowledgeGraph } from '../kg/index.js';
+import { KGSyncMonitor } from '../kg/sync-monitor.js';
 import type { Bead, ConvoyMessage, HeartbeatEvent, ReviewVerdict } from '../types/index.js';
 import { auditLog } from '../hardening/audit.js';
 import type { Mayor } from '../roles/mayor.js';
@@ -68,6 +71,7 @@ export class WorkerRuntime {
   private polecats: PolecatSlot[];
 
   private mayor: Mayor | null;
+  private refinery: Refinery;
   private maxInflightBeads: number;
   /** Stall counter per bead_id for POLECAT_STALLED re-queue / BLOCKED escalation */
   private stallCounts = new Map<string, number>();
@@ -76,6 +80,9 @@ export class WorkerRuntime {
   /** Set by pauseDispatch() during graceful shutdown — blocks new BEAD_DISPATCHes */
   private dispatchPaused = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  private kg: KnowledgeGraph;
+  private kgSyncMonitor: KGSyncMonitor;
 
   constructor(config: WorkerRuntimeConfig) {
     this.rigName = config.rigName;
@@ -114,12 +121,23 @@ export class WorkerRuntime {
       }),
       busy: false,
     }));
+
+    this.kg = new KnowledgeGraph(config.kgPath);
+    this.kgSyncMonitor = new KGSyncMonitor(this.kg);
+
+    this.refinery = new Refinery({
+      agentId: 'refinery_01',
+      rigName: config.rigName,
+      groqApiKey: config.groqApiKey,
+      kgPath: config.kgPath,
+    });
   }
 
   /** Start the polling loop. */
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
+    this.kgSyncMonitor.start();
     this.pollTimer = setInterval(() => {
       void this.processOnce();
     }, this.pollIntervalMs);
@@ -128,12 +146,14 @@ export class WorkerRuntime {
   /** Stop the polling loop and close workers. */
   async stop(): Promise<void> {
     this.running = false;
+    this.kgSyncMonitor.stop();
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
     this.safeguardPool.close();
     this.witness.close();
+    this.kg.close();
     // Polecat has no close() — workers are stateless between beads
   }
 
@@ -454,6 +474,27 @@ export class WorkerRuntime {
       const diff = String(data['diff'] ?? '');
       const requirement = String(data['task_description'] ?? bead.task_type ?? '');
 
+      // C3: If refinery_required, run Refinery before Witness (GAP M4)
+      if (bead.refinery_required) {
+        try {
+          await this.refinery.analyze(
+            requirement || bead.task_type,
+            bead.task_type,
+            { witnessReason: 'pre-witness refinery pass', attempts: 1, diff },
+          );
+          // Record Refinery pre-pass in ledger (status: in_progress so tests can verify)
+          await this.ledger.appendBead(this.rigName, {
+            ...bead,
+            status: 'in_progress',
+            outcome: undefined,
+            updated_at: new Date().toISOString(),
+          });
+        } catch (err) {
+          console.warn(`[WorkerRuntime] Refinery pre-pass failed for ${bead.bead_id}: ${String(err)}`);
+          // Non-fatal — proceed to Witness regardless
+        }
+      }
+
       try {
         const verdict = await this.witness.review(
           diff,
@@ -625,6 +666,62 @@ export class WorkerRuntime {
       } catch (err) {
         console.error(`[WorkerRuntime] Failed to re-queue stalled bead ${bead_id}: ${String(err)}`);
       }
+    }
+  }
+
+  /**
+   * Handle a POTENTIAL_DEADLOCK heartbeat event from the swarm monitor.
+   * Per SWARM.md: if stall exceeds 30s, emit SWARM_ABORT to Mayor and re-queue the bead.
+   * HIGH_FAN_OUT is logged only (not an escalation) — callers must not invoke this for that reason.
+   */
+  async handleDeadlock(event: { bead_id: string; stall_duration_ms: number; reason: string }): Promise<void> {
+    const { bead_id, stall_duration_ms } = event;
+
+    if (stall_duration_ms >= 30_000) {
+      // Emit SWARM_ABORT to Mayor inbox
+      try {
+        await this.bus.send({
+          header: {
+            sender_id: 'runtime',
+            recipient: 'mayor',
+            timestamp: new Date().toISOString(),
+            seq: this.bus.getNextSeq('runtime'),
+          },
+          payload: {
+            type: 'SWARM_ABORT',
+            data: { bead_id, reason: event.reason, stall_duration_ms },
+          },
+          signature: 'ed25519:internal',
+        });
+      } catch (err) {
+        console.error(`[WorkerRuntime] Failed to emit SWARM_ABORT for bead ${bead_id}: ${String(err)}`);
+      }
+    }
+
+    // Re-queue the bead for a fresh attempt
+    const beads = this.ledger.readBeads(this.rigName);
+    const bead = beads.find((b) => b.bead_id === bead_id);
+    if (!bead) return;
+
+    try {
+      await this.bus.send({
+        header: {
+          sender_id: 'runtime',
+          recipient: 'polecat',
+          timestamp: new Date().toISOString(),
+          seq: this.bus.getNextSeq('runtime'),
+        },
+        payload: {
+          type: 'BEAD_DISPATCH',
+          data: {
+            bead_id,
+            plan_checkpoint_id: bead.plan_checkpoint_id ?? 'deadlock-requeue',
+          },
+        },
+        signature: 'ed25519:internal',
+      });
+    } catch (err) {
+      console.error(`[WorkerRuntime] Failed to re-queue deadlocked bead ${bead_id}: ${String(err)}`);
     }
   }
 

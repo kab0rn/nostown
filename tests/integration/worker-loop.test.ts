@@ -224,3 +224,45 @@ describe('WorkerRuntime', () => {
     await runtime.stop();
   });
 });
+
+describe('KGSyncMonitor lifecycle with WorkerRuntime (GAP H2)', () => {
+  it('KGSyncMonitor starts with WorkerRuntime.start() and stops with drain()', async () => {
+    const rig = 'wl-rig-kgsync';
+    const kgPath = freshKg();
+
+    const runtime = new WorkerRuntime({
+      rigName: rig,
+      polecatCount: 1,
+      safeguardPoolSize: 1,
+      kgPath,
+    });
+
+    await runtime.start();
+
+    const status = runtime.getStatus();
+    expect(status.running).toBe(true);
+
+    await runtime.drain(1000);
+
+    const statusAfter = runtime.getStatus();
+    expect(statusAfter.running).toBe(false);
+  });
+
+  it('WorkerRuntime.stop() stops KGSyncMonitor without errors', async () => {
+    const rig = 'wl-rig-kgsync2';
+    const kgPath = freshKg();
+
+    const runtime = new WorkerRuntime({
+      rigName: rig,
+      polecatCount: 1,
+      safeguardPoolSize: 1,
+      kgPath,
+    });
+
+    await runtime.start();
+    expect(runtime.getStatus().running).toBe(true);
+
+    await runtime.stop();
+    expect(runtime.getStatus().running).toBe(false);
+  });
+});

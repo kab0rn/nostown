@@ -57,6 +57,12 @@ export class Historian {
     // 3b. Auto-validate promoted models: demote if witness approval rate dropped (Enh 3.3)
     await this.autoValidatePromotedModels(beads);
 
+    // 3c. Detect playbook regressions (GAP M1)
+    await this.detectPlaybookRegressions(rigName, beads);
+
+    // 3d. Write preferred_for triples for high-performing models (GAP M2)
+    await this.updateRigPreferences(rigName, beads);
+
     // 4. Record rig wing in KG for future cross-rig discovery
     await this.recordRigWing(rigName);
 
@@ -411,18 +417,128 @@ export class Historian {
   }
 
   /**
+   * Detect playbook regressions by grouping bead outcomes by playbook_match.
+   * When a playbook's current success rate has dropped >10% vs its stored KG rate,
+   * write a playbook_regression triple. (GAP M1)
+   */
+  private async detectPlaybookRegressions(rigName: string, beads: Bead[]): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Group outcomes by playbook_match
+    const playbookOutcomes = new Map<string, { success: number; fail: number }>();
+    for (const bead of beads) {
+      if (!bead.playbook_match) continue;
+      const p = playbookOutcomes.get(bead.playbook_match) ?? { success: 0, fail: 0 };
+      if (bead.outcome === 'SUCCESS') p.success++;
+      else if (bead.outcome === 'FAILURE') p.fail++;
+      playbookOutcomes.set(bead.playbook_match, p);
+    }
+
+    for (const [playbookId, outcomes] of playbookOutcomes.entries()) {
+      const total = outcomes.success + outcomes.fail;
+      if (total === 0) continue;
+      const currentRate = outcomes.success / total;
+
+      // Query stored success rate from KG
+      const storedTriples = this.kg.queryByRelation('has_playbook', today)
+        .filter((t) => t.object === playbookId || t.object.endsWith(`_${playbookId}`));
+
+      for (const triple of storedTriples) {
+        const meta = triple.metadata as Record<string, unknown> | undefined;
+        const storedRate = typeof meta?.success_rate === 'number' ? meta.success_rate : null;
+        if (storedRate === null) continue;
+
+        if (storedRate - currentRate > 0.1) {
+          this.kg.addTriple({
+            subject: playbookId,
+            relation: 'playbook_regression',
+            object: rigName,
+            valid_from: today,
+            agent_id: this.agentId,
+            metadata: {
+              class: 'advisory',
+              stored_rate: storedRate,
+              current_rate: currentRate,
+              drop: storedRate - currentRate,
+              sample_size: total,
+            },
+            created_at: new Date().toISOString(),
+          });
+          console.warn(`[Historian:${this.agentId}] Playbook regression: ${playbookId} on ${rigName} (${(storedRate * 100).toFixed(0)}% → ${(currentRate * 100).toFixed(0)}%)`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Write preferred_for KG triples for models that perform well across many task types.
+   * Condition: >85% success rate across ≥5 distinct task types on this rig. (GAP M2)
+   */
+  private async updateRigPreferences(rigName: string, beads: Bead[]): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Aggregate per (model, task_type): success/fail counts
+    const modelTaskOutcomes = new Map<string, Map<string, { success: number; fail: number }>>();
+    for (const bead of beads) {
+      if (!bead.model || !bead.task_type) continue;
+      const byTask = modelTaskOutcomes.get(bead.model) ?? new Map<string, { success: number; fail: number }>();
+      const outcomes = byTask.get(bead.task_type) ?? { success: 0, fail: 0 };
+      if (bead.outcome === 'SUCCESS') outcomes.success++;
+      else if (bead.outcome === 'FAILURE') outcomes.fail++;
+      byTask.set(bead.task_type, outcomes);
+      modelTaskOutcomes.set(bead.model, byTask);
+    }
+
+    for (const [model, byTask] of modelTaskOutcomes.entries()) {
+      let totalSuccess = 0;
+      let totalFail = 0;
+      let qualifyingTaskTypes = 0;
+
+      for (const [, outcomes] of byTask.entries()) {
+        const taskTotal = outcomes.success + outcomes.fail;
+        if (taskTotal === 0) continue;
+        const taskRate = outcomes.success / taskTotal;
+        if (taskRate > 0.85) qualifyingTaskTypes++;
+        totalSuccess += outcomes.success;
+        totalFail += outcomes.fail;
+      }
+
+      const grandTotal = totalSuccess + totalFail;
+      if (grandTotal === 0) continue;
+      const overallRate = totalSuccess / grandTotal;
+
+      // Require >85% overall AND ≥5 qualifying task types
+      if (overallRate > 0.85 && qualifyingTaskTypes >= 5) {
+        this.kg.addTriple({
+          subject: model,
+          relation: 'preferred_for',
+          object: rigName,
+          valid_from: today,
+          agent_id: this.agentId,
+          metadata: {
+            class: 'advisory',
+            success_rate: overallRate,
+            qualifying_task_types: qualifyingTaskTypes,
+          },
+          created_at: new Date().toISOString(),
+        });
+        console.log(`[Historian:${this.agentId}] Model ${model} preferred_for ${rigName} (${(overallRate * 100).toFixed(0)}% across ${qualifyingTaskTypes} task types)`);
+      }
+    }
+  }
+
+  /**
    * Record this rig's wing in the KG for future cross-rig discovery.
    * Simplified from the palace-backed version: no tunnel registration,
    * just records the current rig wing as a KG triple.
    */
   private async recordRigWing(rigName: string): Promise<void> {
-    const myWing = `wing_rig_${rigName}`;
     const today = new Date().toISOString().slice(0, 10);
 
     this.kg.addTriple({
-      subject: 'historian_wings',
-      relation: 'registered',
-      object: myWing,
+      subject: rigName,
+      relation: 'historian_run',
+      object: 'completed',
       valid_from: today,
       agent_id: this.agentId,
       metadata: { class: 'advisory' },

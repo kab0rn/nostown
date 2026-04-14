@@ -39,6 +39,7 @@ export const criticalBeadStarvation = meter.createCounter('critical_bead_starvat
 export const beadLatencyMs = meter.createHistogram('bead_latency_ms', {
   description: 'Time from bead assignment to resolution in ms',
   unit: 'ms',
+  advice: { explicitBucketBoundaries: [100, 500, 1000, 2000, 5000, 10000, 30000] },
 });
 
 /** KG query latency (P95 alert: > 500ms) */
@@ -63,6 +64,7 @@ export const safeguardScanLatencyMs = meter.createHistogram('safeguard_scan_late
 export const ledgerLockWaitMs = meter.createHistogram('ledger_lock_wait_ms', {
   description: 'Time spent waiting on a per-rig ledger lock in ms',
   unit: 'ms',
+  advice: { explicitBucketBoundaries: [5, 10, 20, 50, 100, 200, 500, 1000] },
 });
 
 // ── Observable Gauges ─────────────────────────────────────────────────────────

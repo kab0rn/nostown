@@ -97,6 +97,20 @@ export class RoutingDispatcher {
     const complexityModel = COMPLEXITY_MODELS[complexity] ?? getModelForRole(ctx.role, ctx.taskType);
     const model = demoted === complexityModel ? fallback : complexityModel;
 
+    // 5. preferred_for tiebreaker — if multiple models could serve this rig, prefer one
+    //    with an active preferred_for triple (GAP M2). Only applies when not locked or
+    //    demoted to avoid overriding stronger signals.
+    const preferredModel = this.queryPreferredModel(ctx.rigName);
+    if (preferredModel && preferredModel !== demoted) {
+      return {
+        model: preferredModel,
+        fallback,
+        locked: false,
+        playbookUsed: false,
+        reason: `preferred_for tiebreaker: ${preferredModel} preferred for rig ${ctx.rigName}`,
+      };
+    }
+
     return {
       model,
       fallback,
@@ -142,6 +156,28 @@ export class RoutingDispatcher {
     if (triples.length === 0) return null;
     // Most recently written lock wins (queryEntity already orders DESC valid_from)
     return triples[0].subject;
+  }
+
+  /**
+   * Query the preferred model for a rig (via preferred_for triples).
+   * Returns the model with the highest success_rate preferred_for this rig, or null.
+   */
+  private queryPreferredModel(rigName: string): string | null {
+    const today = new Date().toISOString().slice(0, 10);
+    const triples = this.kg.queryByRelation('preferred_for', today)
+      .filter((t) => t.object === rigName);
+
+    if (triples.length === 0) return null;
+
+    // Pick the model with the highest stored success_rate
+    let bestModel: string | null = null;
+    let bestRate = -1;
+    for (const t of triples) {
+      const meta = t.metadata as Record<string, unknown> | undefined;
+      const rate = typeof meta?.success_rate === 'number' ? meta.success_rate : 0;
+      if (rate > bestRate) { bestRate = rate; bestModel = t.subject; }
+    }
+    return bestModel;
   }
 
   /**

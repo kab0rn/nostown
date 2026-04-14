@@ -56,17 +56,63 @@ export function validateChecksum(bead: Bead): boolean {
   return bead.checksum === expected;
 }
 
+/** Default max ledger file size before rollover: 100MB */
+const DEFAULT_LEDGER_MAX_BYTES = 100 * 1024 * 1024;
+
 export class Ledger {
   private rigsRoot: string;
+  private maxBytes: number;
 
   constructor(rigsRoot?: string) {
     // Read env var lazily (at construction time, not module load time) so tests can
     // set process.env.NOS_RIGS_ROOT in beforeAll before creating a Ledger instance.
     this.rigsRoot = path.resolve(rigsRoot ?? process.env.NOS_RIGS_ROOT ?? RIGS_ROOT);
+    this.maxBytes = Number(process.env.NOS_LEDGER_MAX_BYTES ?? DEFAULT_LEDGER_MAX_BYTES);
   }
 
   private beadsPath(rigName: string): string {
     return path.join(this.rigsRoot, rigName, 'beads', 'current.jsonl');
+  }
+
+  private archivePath(rigName: string): string {
+    return path.join(this.rigsRoot, rigName, 'beads', 'archive');
+  }
+
+  private manifestPath(rigName: string): string {
+    return path.join(this.rigsRoot, rigName, 'beads', 'manifest.json');
+  }
+
+  /**
+   * Archive the current ledger file when it exceeds NOS_LEDGER_MAX_BYTES.
+   * Moves current.jsonl → beads/archive/YYYY-MM-DD-{timestamp}.jsonl
+   * Updates beads/manifest.json with the archived segment entry.
+   */
+  private archiveCurrentFile(rigName: string, filePath: string): void {
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10);
+    const ts = now.getTime();
+    const archiveDir = this.archivePath(rigName);
+    fs.mkdirSync(archiveDir, { recursive: true });
+
+    const archiveFile = path.join(archiveDir, `${dateStr}-${ts}.jsonl`);
+    fs.renameSync(filePath, archiveFile);
+
+    // Update manifest
+    const manifestFile = this.manifestPath(rigName);
+    let manifest: { segments: string[] } = { segments: [] };
+    if (fs.existsSync(manifestFile)) {
+      try {
+        manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8')) as { segments: string[] };
+      } catch {
+        manifest = { segments: [] };
+      }
+    }
+    manifest.segments.push(archiveFile);
+    fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2), 'utf8');
+
+    // Re-create empty current.jsonl
+    fs.writeFileSync(filePath, '', 'utf8');
+    console.log(`[Ledger] Archived ${filePath} → ${archiveFile} (${manifest.segments.length} total segments)`);
   }
 
   /**
@@ -100,6 +146,13 @@ export class Ledger {
         realpath: false,
       });
       ledgerLockWaitMs.record(Date.now() - lockStart, { rig: rigName });
+
+      // Rollover check (HARDENING.md — NOS_LEDGER_MAX_BYTES)
+      const stat = fs.statSync(filePath);
+      if (stat.size >= this.maxBytes) {
+        this.archiveCurrentFile(rigName, filePath);
+      }
+
       fs.appendFileSync(filePath, JSON.stringify(beadWithChecksum) + '\n', 'utf8');
     } finally {
       await release?.();
@@ -107,17 +160,55 @@ export class Ledger {
   }
 
   /**
-   * Read all beads from a rig's ledger (validates checksums on read)
+   * Read lines from a single JSONL file and parse them into Beads (validates checksums).
+   */
+  private readBeadsFromFile(filePath: string): Bead[] {
+    if (!fs.existsSync(filePath)) return [];
+    const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter((l) => l.trim());
+    const beads: Bead[] = [];
+    for (const line of lines) {
+      try {
+        const bead = JSON.parse(line) as Bead;
+        if (!validateChecksum(bead)) {
+          console.error(`[Ledger] Corrupt bead detected: ${bead.bead_id} — checksum mismatch`);
+          continue;
+        }
+        beads.push(bead);
+      } catch {
+        console.error(`[Ledger] Failed to parse bead line: ${line.slice(0, 80)}`);
+      }
+    }
+    return beads;
+  }
+
+  /**
+   * Read all beads from a rig's ledger (validates checksums on read).
+   * Also scans archive segments listed in beads/manifest.json.
    */
   readBeads(rigName: string): Bead[] {
+    const beads: Bead[] = [];
+
+    // Read archive segments first (chronological order)
+    const manifestFile = this.manifestPath(rigName);
+    if (fs.existsSync(manifestFile)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8')) as { segments?: string[] };
+        for (const segment of (manifest.segments ?? [])) {
+          beads.push(...this.readBeadsFromFile(segment));
+        }
+      } catch {
+        console.error(`[Ledger] Failed to read manifest for rig ${rigName}`);
+      }
+    }
+
+    // Read current file last (most recent entries)
     const filePath = this.beadsPath(rigName);
-    if (!fs.existsSync(filePath)) return [];
+    if (!fs.existsSync(filePath)) return beads;
 
     const lines = fs.readFileSync(filePath, 'utf8')
       .split('\n')
       .filter((l) => l.trim());
 
-    const beads: Bead[] = [];
     for (const line of lines) {
       try {
         const bead = JSON.parse(line) as Bead;

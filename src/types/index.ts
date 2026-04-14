@@ -30,6 +30,8 @@ export interface Bead {
   updated_at?: string;
   rig?: string;
   task_description?: string;
+  playbook_match?: string;      // Playbook ID applied during orchestration (GAP M1)
+  refinery_required?: boolean;  // Route through Refinery before Witness (GAP M4)
 }
 
 export type ConvoyType =

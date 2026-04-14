@@ -58,6 +58,8 @@ export class GroqProvider {
   readonly apiKey: string;
   private emitHeartbeat: HeartbeatEmitter | null;
   private readonly circuitBreaker: CircuitBreaker;
+  /** Tracks token usage from the most recent runWithRetry() call */
+  private _lastTokenUsage = 0;
   /** Timestamp when the current Groq outage started (null = no outage) */
   private groqOutageStartAt: number | null = null;
 
@@ -229,6 +231,19 @@ export class GroqProvider {
     }
   }
 
+  /**
+   * Like executeInference() but also returns the token count from the API response.
+   * Callers that need token metrics (e.g. Polecat) should use this method.
+   * All other callers keep using executeInference() unchanged.
+   */
+  async executeInferenceWithUsage(
+    params: InferenceParams,
+  ): Promise<{ content: string; tokens: number }> {
+    this._lastTokenUsage = 0;
+    const content = await this.executeInference(params);
+    return { content, tokens: this._lastTokenUsage };
+  }
+
   private async runWithRetry(
     model: string,
     params: InferenceParams,
@@ -272,6 +287,9 @@ export class GroqProvider {
             continue;
           }
         }
+
+        // Capture token usage before returning
+        this._lastTokenUsage = response.usage?.total_tokens ?? 0;
 
         // Success — record latency and emit recovery if we had previous errors
         beadLatencyMs.record(Date.now() - inferenceStart, { model, role: params.role });

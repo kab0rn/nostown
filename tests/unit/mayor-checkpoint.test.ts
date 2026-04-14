@@ -318,3 +318,91 @@ describe('Mayor CoVe self-critique pass (P8)', () => {
     }
   });
 });
+
+describe('refinery_required routing (GAP M4)', () => {
+  let mayor: Mayor;
+
+  beforeEach(() => {
+    mayor = new Mayor({
+      agentId: 'mayor_ckpt',
+      rigName: 'ckpt-rig',
+      kgPath: TEST_DB,
+    });
+  });
+
+  afterEach(() => {
+    mayor.close();
+    jest.restoreAllMocks();
+  });
+
+  it('bead with fan_out_weight >= 5 has refinery_required set to true', async () => {
+    // Decompose returns a single bead with fan_out_weight=6
+    jest.spyOn(GroqProvider.prototype, 'executeInference').mockResolvedValue(
+      JSON.stringify({
+        beads: [{
+          task_type: 'execute',
+          task_description: 'High fan-out task',
+          role: 'polecat',
+          needs: [],
+          critical_path: true,
+          witness_required: false,
+          fan_out_weight: 6,
+        }],
+      }),
+    );
+
+    const plan = await mayor.orchestrate({ description: 'High fan-out task' });
+    expect(plan.beads[0].refinery_required).toBe(true);
+    expect(plan.beads[0].fan_out_weight).toBeGreaterThanOrEqual(5);
+  });
+
+  it('bead with fan_out_weight < 5 does NOT have refinery_required', async () => {
+    jest.spyOn(GroqProvider.prototype, 'executeInference').mockResolvedValue(
+      JSON.stringify({
+        beads: [{
+          task_type: 'execute',
+          task_description: 'Normal task',
+          role: 'polecat',
+          needs: [],
+          critical_path: false,
+          witness_required: false,
+          fan_out_weight: 2,
+        }],
+      }),
+    );
+
+    const plan = await mayor.orchestrate({ description: 'Normal fan-out task' });
+    expect(plan.beads[0].refinery_required).toBeUndefined();
+  });
+
+  it('task_type in NOS_REFINERY_TASK_TYPES gets refinery_required=true', async () => {
+    process.env.NOS_REFINERY_TASK_TYPES = 'special_review';
+
+    // Create a fresh Mayor so it picks up the env var
+    const specialMayor = new Mayor({
+      agentId: 'mayor_ckpt',
+      rigName: 'ckpt-rig',
+      kgPath: TEST_DB,
+    });
+
+    jest.spyOn(GroqProvider.prototype, 'executeInference').mockResolvedValue(
+      JSON.stringify({
+        beads: [{
+          task_type: 'special_review',
+          task_description: 'Special review task',
+          role: 'polecat',
+          needs: [],
+          critical_path: false,
+          witness_required: false,
+          fan_out_weight: 1,
+        }],
+      }),
+    );
+
+    const plan = await specialMayor.orchestrate({ description: 'Special review task' });
+    specialMayor.close();
+    delete process.env.NOS_REFINERY_TASK_TYPES;
+
+    expect(plan.beads[0].refinery_required).toBe(true);
+  });
+});

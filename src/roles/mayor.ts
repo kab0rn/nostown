@@ -18,6 +18,15 @@ import { v4 as uuidv4 } from 'uuid';
 
 export type HeartbeatEmitter = (event: HeartbeatEvent) => void;
 
+/**
+ * Task types that always require Refinery pre-processing before Witness review.
+ * Configurable via NOS_REFINERY_TASK_TYPES env var (comma-separated). (GAP M4)
+ * Read lazily so tests can set the env var before creating a Mayor instance.
+ */
+function getRefineryTaskTypes(): Set<string> {
+  return new Set((process.env.NOS_REFINERY_TASK_TYPES ?? '').split(',').filter(Boolean));
+}
+
 export interface MayorConfig {
   agentId: string;
   rigName: string;
@@ -184,12 +193,13 @@ export class Mayor {
     // Generate OTel trace context for this plan (OBSERVABILITY.md §2 — distributed tracing)
     const traceCtx = newTraceContext();
 
-    // 5. Attach checkpoint ID and trace_id to all beads
+    // 5. Attach checkpoint ID, trace_id, and playbook_match to all beads
     const planId = `plan_${uuidv4().slice(0, 8)}`;
     const beadsWithCheckpoint = beads.map((b) => ({
       ...b,
       plan_checkpoint_id: checkpointId,
       trace_id: traceCtx.trace_id,
+      ...(activePlaybook ? { playbook_match: activePlaybook.id } : {}),
     }));
 
     // 6. Write beads to ledger
@@ -274,13 +284,15 @@ Keep beads atomic and parallelizable where possible. Mark dependencies via needs
           dependentCount.set(dep, (dependentCount.get(dep) ?? 0) + 1);
         }
       }
-      let finalBeads = tempBeads.map((bead) => ({
-        ...bead,
-        fan_out_weight: Math.max(
-          bead.fan_out_weight,
-          dependentCount.get(bead.bead_id) ?? 0,
-        ),
-      }));
+      let finalBeads = tempBeads.map((bead) => {
+        const fanOut = Math.max(bead.fan_out_weight, dependentCount.get(bead.bead_id) ?? 0);
+        const refineryRequired = fanOut >= 5 || getRefineryTaskTypes().has(bead.task_type);
+        return {
+          ...bead,
+          fan_out_weight: fanOut,
+          ...(refineryRequired ? { refinery_required: true } : {}),
+        };
+      });
 
       // P8: CoVe self-critique — only for multi-bead plans (no deps to check in single-bead)
       if (finalBeads.length > 1) {

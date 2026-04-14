@@ -114,9 +114,11 @@ export class Polecat {
 
       this.lastActivityAt = new Date();
       const traceCtx = { trace_id: bead.trace_id ?? bead.bead_id };
-      const result = await withSpan(`polecat.execute.${bead.task_type}`, traceCtx, () =>
-        this.provider.executeInference(inferenceParams),
+      const inferenceResult = await withSpan(`polecat.execute.${bead.task_type}`, traceCtx, () =>
+        this.provider.executeInferenceWithUsage(inferenceParams),
       );
+      const result = inferenceResult.content;
+      const inferenceTokens = inferenceResult.tokens;
       this.lastActivityAt = new Date();
 
       const durationMs = Date.now() - startMs;
@@ -159,6 +161,7 @@ export class Polecat {
         metrics: {
           ...bead.metrics,
           duration_ms: durationMs,
+          tokens: inferenceTokens,
         },
         updated_at: new Date().toISOString(),
       };

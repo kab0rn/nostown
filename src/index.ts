@@ -104,12 +104,18 @@ function heartbeatHandler(event: HeartbeatEvent): void {
     );
   }
   if (event.type === 'POTENTIAL_DEADLOCK') {
+    // Structured WARN per SWARM.md
     process.stderr.write(
-      `${red('⚠')} ${gray('[Heartbeat]')} ${red('POTENTIAL_DEADLOCK')} bead=${event.bead_id.slice(0, 8)} ` +
-      `reason=${event.reason} (${Math.round(event.stall_duration_ms / 1000)}s)\n`,
+      JSON.stringify({
+        level: 'WARN',
+        event: 'POTENTIAL_DEADLOCK',
+        bead_id: event.bead_id,
+        reason: event.reason,
+        stall_duration_ms: event.stall_duration_ms,
+      }) + '\n',
     );
     if (event.reason !== 'HIGH_FAN_OUT') {
-      void runtimeRef?.handleStall({ bead_id: event.bead_id, agent_id: 'runtime', stall_duration_ms: event.stall_duration_ms });
+      void runtimeRef?.handleDeadlock(event);
     }
   }
   if (event.type === 'PROVIDER_EXHAUSTED') {
