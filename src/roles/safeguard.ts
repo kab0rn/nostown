@@ -113,6 +113,16 @@ function getOrLoadRules(ttlMs: number): SecurityRule[] {
 /** Cached learned vulnerability patterns (shared across workers in-process, session-local) */
 let learnedPatterns: string[] = [];
 
+/**
+ * Whether to persist learned patterns to KG for cross-session survival (Enh 3.1).
+ * Must be explicitly enabled via NOS_SAFEGUARD_PERSIST_PATTERNS=true (default: false).
+ * Keeping it opt-in preserves test isolation: existing tests that rely on
+ * _resetPatternCacheForTesting() are unaffected because KG reads are skipped.
+ */
+function shouldPersistPatterns(): boolean {
+  return process.env.NOS_SAFEGUARD_PERSIST_PATTERNS === 'true';
+}
+
 /** Reset the in-process pattern cache — for testing only. */
 export function _resetPatternCacheForTesting(): void {
   learnedPatterns = [];
@@ -141,20 +151,50 @@ export class SafeguardWorker {
   }
 
   /**
-   * Return in-process learned vulnerability patterns.
-   * Session-local only — patterns are not persisted across restarts.
+   * Return learned vulnerability patterns.
+   * When NOS_SAFEGUARD_PERSIST_PATTERNS=true (default): reads KG-persisted patterns (cross-session)
+   * merged with in-process cache. In test environments set NOS_SAFEGUARD_PERSIST_PATTERNS=false
+   * to keep patterns session-local.
    */
   private loadLearnedPatterns(): string[] {
-    return learnedPatterns;
+    if (!shouldPersistPatterns()) return learnedPatterns;
+    // Load KG-persisted patterns (survive restarts) (Enh 3.1)
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const triples = this.kg.queryTriples('safeguard_patterns', today, 'learned_vuln_pattern');
+      const kgPatterns = triples.map((t) => t.object).filter((p) => !learnedPatterns.includes(p));
+      return [...learnedPatterns, ...kgPatterns];
+    } catch {
+      return learnedPatterns;
+    }
   }
 
   /**
-   * Add a newly discovered vulnerability pattern to the in-process cache.
-   * Session-local only.
+   * Persist a newly discovered vulnerability pattern.
+   * Always updates in-process cache; also writes KG triple when
+   * NOS_SAFEGUARD_PERSIST_PATTERNS=true (default) for cross-session survival (Enh 3.1).
    */
   private cachePattern(rule: string, detail: string): void {
     const patternKey = `vuln-pattern:${rule}: ${detail}`;
-    learnedPatterns.push(patternKey);
+    if (!learnedPatterns.includes(patternKey)) {
+      learnedPatterns.push(patternKey);
+    }
+    if (!shouldPersistPatterns()) return;
+    // Persist to KG so pattern survives restarts (Enh 3.1)
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      this.kg.addTriple({
+        subject: 'safeguard_patterns',
+        relation: 'learned_vuln_pattern',
+        object: patternKey,
+        valid_from: today,
+        agent_id: this.workerId,
+        metadata: { class: 'advisory', rule, detail },
+        created_at: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn(`[SafeguardWorker:${this.workerId}] Pattern KG write failed: ${String(err)}`);
+    }
   }
 
   /**

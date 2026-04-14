@@ -26,6 +26,8 @@ export interface WorkerRuntimeConfig {
   polecatCount?: number;       // default: 4
   safeguardPoolSize?: number;  // default: 2
   pollIntervalMs?: number;     // default: 500
+  /** Maximum beads allowed in-flight simultaneously. Defaults to polecatCount. */
+  maxInflightBeads?: number;
   onEvent?: (event: HeartbeatEvent) => void;
   /** Optional Mayor instance — used for Refinery escalation on REVIEW_VERDICT rejection */
   mayor?: Mayor;
@@ -50,10 +52,13 @@ export class WorkerRuntime {
   private polecats: PolecatSlot[];
 
   private mayor: Mayor | null;
+  private maxInflightBeads: number;
   /** Stall counter per bead_id for POLECAT_STALLED re-queue / BLOCKED escalation */
   private stallCounts = new Map<string, number>();
 
   private running = false;
+  /** Set by pauseDispatch() during graceful shutdown — blocks new BEAD_DISPATCHes */
+  private dispatchPaused = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: WorkerRuntimeConfig) {
@@ -63,6 +68,8 @@ export class WorkerRuntime {
     this.pollIntervalMs = config.pollIntervalMs ?? 500;
     this.onEvent = config.onEvent;
     this.mayor = config.mayor ?? null;
+    const polecatCount = config.polecatCount ?? 4;
+    this.maxInflightBeads = config.maxInflightBeads ?? polecatCount;
 
     this.bus = new ConvoyBus(config.rigName);
     this.ledger = new Ledger();
@@ -81,7 +88,6 @@ export class WorkerRuntime {
       kgPath: config.kgPath,
     });
 
-    const polecatCount = config.polecatCount ?? 4;
     this.polecats = Array.from({ length: polecatCount }, (_, i) => ({
       worker: new Polecat({
         agentId: `polecat_0${i + 1}`,
@@ -113,6 +119,40 @@ export class WorkerRuntime {
     this.safeguardPool.close();
     this.witness.close();
     // Polecat has no close() — workers are stateless between beads
+  }
+
+  /**
+   * Pause accepting new BEAD_DISPATCH convoys.
+   * In-flight Polecats continue to completion. Used by graceful shutdown.
+   */
+  pauseDispatch(): void {
+    this.dispatchPaused = true;
+  }
+
+  /**
+   * Count Polecat slots currently executing a bead.
+   * Used by graceful shutdown to wait for in-flight work to drain.
+   */
+  activePolecat(): number {
+    return this.polecats.filter((s) => s.busy).length;
+  }
+
+  /**
+   * Graceful shutdown: pause dispatch, wait for in-flight Polecats to finish (up to
+   * drainTimeoutMs), then stop. Returns when all beads have settled or timeout expired.
+   */
+  async drain(drainTimeoutMs = 30_000): Promise<void> {
+    this.pauseDispatch();
+    const deadline = Date.now() + drainTimeoutMs;
+    while (this.activePolecat() > 0 && Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 200));
+    }
+    if (this.activePolecat() > 0) {
+      console.warn(
+        `[WorkerRuntime] Drain timeout after ${drainTimeoutMs}ms — ${this.activePolecat()} bead(s) still in-flight`,
+      );
+    }
+    await this.stop();
   }
 
   /**
@@ -179,6 +219,28 @@ export class WorkerRuntime {
   // ── BEAD_DISPATCH — Safeguard 500ms window + Polecat dispatch (P9) ────────
 
   private async handleBeadDispatch(partialBead: Partial<Bead> & { bead_id?: string }): Promise<void> {
+    // During graceful shutdown, don't start new work
+    if (this.dispatchPaused) {
+      console.warn(`[WorkerRuntime] Dispatch paused — skipping bead ${partialBead.bead_id ?? 'unknown'}`);
+      return;
+    }
+
+    // Enforce configurable in-flight cap (NOS_MAX_INFLIGHT_BEADS / Gap 2.2)
+    if (this.activePolecat() >= this.maxInflightBeads) {
+      // Re-queue for next poll — at capacity
+      await this.bus.send({
+        header: {
+          sender_id: 'runtime',
+          recipient: 'polecat',
+          timestamp: new Date().toISOString(),
+          seq: this.bus.getNextSeq('runtime'),
+        },
+        payload: { type: 'BEAD_DISPATCH', data: { bead_id: partialBead.bead_id } },
+        signature: 'ed25519:requeued',
+      });
+      return;
+    }
+
     // Mayor convoy payload contains only a subset of Bead fields. Hydrate from ledger.
     const beadId = partialBead.bead_id ?? '';
     const ledgerBeads = this.ledger.readBeads(this.rigName);
@@ -250,6 +312,22 @@ export class WorkerRuntime {
           });
           return;
         }
+      }
+    }
+
+    // Bead result cache: if identical task already succeeded within 7 days, reuse result (Enh 3.2)
+    if (bead.task_description) {
+      const cachedBead = this.ledger.findCachedBead(bead.task_description, bead.needs, this.rigName);
+      if (cachedBead && cachedBead.bead_id !== bead.bead_id) {
+        console.log(`[WorkerRuntime] Cache hit for bead ${bead.bead_id} — reusing result from ${cachedBead.bead_id}`);
+        await this.ledger.appendBead(this.rigName, {
+          ...bead,
+          status: 'done',
+          outcome: 'SUCCESS',
+          metrics: cachedBead.metrics,
+          updated_at: new Date().toISOString(),
+        });
+        return;
       }
     }
 

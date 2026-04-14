@@ -5,6 +5,7 @@ import { Ledger } from '../ledger/index.js';
 import type { SafeguardPool } from './safeguard.js';
 import type { Bead, InferenceParams, HeartbeatEvent } from '../types/index.js';
 import { beadThroughput } from '../telemetry/metrics.js';
+import { withSpan } from '../telemetry/tracer.js';
 
 export type HeartbeatEmitter = (event: HeartbeatEvent) => void;
 
@@ -112,7 +113,10 @@ export class Polecat {
       };
 
       this.lastActivityAt = new Date();
-      const result = await this.provider.executeInference(inferenceParams);
+      const traceCtx = { trace_id: bead.trace_id ?? bead.bead_id };
+      const result = await withSpan(`polecat.execute.${bead.task_type}`, traceCtx, () =>
+        this.provider.executeInference(inferenceParams),
+      );
       this.lastActivityAt = new Date();
 
       const durationMs = Date.now() - startMs;

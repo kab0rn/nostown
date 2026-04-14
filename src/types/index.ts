@@ -22,6 +22,7 @@ export interface Bead {
   critical_path: boolean;
   fan_out_weight: number;
   plan_checkpoint_id?: string;
+  trace_id?: string;            // OTel trace_id for distributed tracing (OBSERVABILITY.md §2)
   outcome?: BeadOutcome;
   metrics?: BeadMetrics;
   checksum?: string;            // sha256(JSON.stringify(bead_without_checksum))

@@ -6,6 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import type { KGTriple, TripleClass } from '../types/index.js';
 import { ROLE_PRECEDENCE } from '../types/index.js';
+import { kgWriteLatencyMs, kgRetrievalLatencyMs } from '../telemetry/metrics.js';
 
 const DEFAULT_KG_PATH = 'kg/knowledge_graph.sqlite';
 
@@ -65,6 +66,7 @@ export class KnowledgeGraph {
       }
     }
 
+    const writeStart = Date.now();
     const stmt = this.db.prepare(`
       INSERT INTO triples (subject, relation, object, valid_from, valid_to, agent_id, metadata, created_at)
       VALUES (@subject, @relation, @object, @valid_from, @valid_to, @agent_id, @metadata, @created_at)
@@ -79,6 +81,7 @@ export class KnowledgeGraph {
       metadata: triple.metadata ? JSON.stringify(triple.metadata) : null,
       created_at: triple.created_at,
     });
+    kgWriteLatencyMs.record(Date.now() - writeStart, { relation: triple.relation });
     const newId = result.lastInsertRowid as number;
 
     // For critical relations: auto-resolve conflicts by role precedence
@@ -165,7 +168,9 @@ export class KnowledgeGraph {
 
     sql += ' ORDER BY valid_from DESC, created_at DESC';
 
+    const queryStart = Date.now();
     const rows = this.db.prepare(sql).all(params) as Array<Record<string, unknown>>;
+    kgRetrievalLatencyMs.record(Date.now() - queryStart, { subject });
     return rows.map(this.rowToTriple);
   }
 

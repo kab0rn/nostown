@@ -83,6 +83,26 @@ export const witnessApprovalRate = meter.createObservableGauge('witness_approval
   description: 'Fraction of reviewed PRs approved by Witness council (0.0–1.0)',
 });
 
+// ── Witness approval rate accumulator ────────────────────────────────────────
+// Updated by Witness.review() on each verdict; read by the gauge callback.
+
+let _witnessTotal = 0;
+let _witnessApproved = 0;
+
+/**
+ * Record a Witness verdict for the approval-rate gauge.
+ * Call this from Witness.review() after a verdict is reached.
+ */
+export function recordWitnessVerdict(approved: boolean): void {
+  _witnessTotal++;
+  if (approved) _witnessApproved++;
+}
+
+witnessApprovalRate.addCallback((result) => {
+  // Default to 1.0 (healthy) when no verdicts have been issued yet
+  result.observe(_witnessTotal > 0 ? _witnessApproved / _witnessTotal : 1.0);
+});
+
 /** Workflows with active beads but no Mayor heartbeat (alert: > 0) */
 export const orphanWorkflowCount = meter.createObservableGauge('orphan_workflow_count', {
   description: 'Count of workflows with no active Mayor heartbeat',
