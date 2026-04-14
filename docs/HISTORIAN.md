@@ -50,7 +50,8 @@ Nightly Run
 ├─ 3. UPDATE ROUTING KG — compute success rates, write model promotion/demotion triples
 │       kg.addTriple("llama-3.1-8b", "locked_to", "typescript_generics", valid_from=today)
 └─ 4. RECORD RIG STATE — write KG triple for this nightly run
-        kg.addTriple(rigName, "historian_run", "completed", valid_from=today)
+        kg.addTriple("historian_wings", "registered", "wing_rig_{rigName}", valid_from=today)
+        Note: GAP_ANALYSIS.md M3 — subject should be rigName for queryability; pending fix.
 ```
 
 ---
