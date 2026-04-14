@@ -242,18 +242,32 @@ export class KnowledgeGraph {
   /**
    * Returns true if any active Safeguard lockdown triple exists.
    * Used by RoutingDispatcher.isPlaybookFresh() to block playbook use during lockdown.
+   *
+   * @param taskType - When provided, only matches lockdowns that were triggered while
+   *   scanning that specific task class (stored in metadata.task_type by SafeguardWorker).
+   *   Lockdowns with no task_type in metadata are treated as global and always match.
+   *   This prevents a security lockdown on one task class from blocking unrelated playbooks.
    */
-  hasActiveLockdown(asOf?: string): boolean {
+  hasActiveLockdown(taskType?: string, asOf?: string): boolean {
     const date = asOf ?? new Date().toISOString().slice(0, 10);
-    const row = this.db.prepare(`
-      SELECT 1 FROM triples
+    const rows = this.db.prepare(`
+      SELECT metadata FROM triples
       WHERE subject LIKE 'lockdown_%'
         AND relation = 'triggered_by'
         AND valid_from <= @date
         AND (valid_to IS NULL OR valid_to > @date)
-      LIMIT 1
-    `).get({ date });
-    return row !== undefined;
+    `).all({ date }) as Array<{ metadata: string | null }>;
+
+    if (rows.length === 0) return false;
+    if (!taskType) return true; // any active lockdown blocks when no task type specified
+
+    for (const row of rows) {
+      const meta = row.metadata ? JSON.parse(row.metadata) as Record<string, unknown> : {};
+      const lockedTaskType = meta.task_type as string | undefined;
+      // Lockdown with no task_type = global lockdown → always matches
+      if (!lockedTaskType || lockedTaskType === taskType) return true;
+    }
+    return false;
   }
 
   /**

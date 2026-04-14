@@ -4,6 +4,7 @@ import { Mayor } from './roles/mayor.js';
 import { WorkerRuntime } from './runtime/worker-loop.js';
 import { HeartbeatMonitor } from './monitor/heartbeat.js';
 import { Historian } from './roles/historian.js';
+import { Refinery } from './roles/refinery.js';
 import { runFromStdin } from './swarm/bridge.js';
 import * as readline from 'readline';
 import * as fs from 'fs';
@@ -32,9 +33,20 @@ function checkEnv(): void {
   }
 }
 
+// Late-binding ref so heartbeatHandler can forward POLECAT_STALLED to WorkerRuntime
+// without a circular dependency (runtime is created after this function is defined)
+let runtimeRef: WorkerRuntime | null = null;
+
 function heartbeatHandler(event: HeartbeatEvent): void {
   if (event.type === 'MAYOR_MISSING') {
     console.warn(`[Heartbeat] ${event.type}:`, JSON.stringify(event));
+  }
+  if (event.type === 'POLECAT_STALLED') {
+    // HARDENING.md §1.3: re-queue or BLOCKED escalation handled in WorkerRuntime
+    void runtimeRef?.handleStall(event);
+  }
+  if (event.type === 'BEAD_BLOCKED') {
+    console.warn(`[Heartbeat] BEAD_BLOCKED bead_id=${event.bead_id} retries=${event.retry_count}`);
   }
 }
 
@@ -123,11 +135,18 @@ async function main(): Promise<void> {
 
   checkEnv();
 
+  const refinery = new Refinery({
+    agentId: 'refinery_01',
+    rigName: RIG_NAME,
+    groqApiKey: GROQ_API_KEY,
+  });
+
   const mayor = new Mayor({
     agentId: AGENT_ID,
     rigName: RIG_NAME,
     groqApiKey: GROQ_API_KEY,
     emitHeartbeat: heartbeatHandler,
+    refinery,
   });
 
   const runtime = new WorkerRuntime({
@@ -137,7 +156,9 @@ async function main(): Promise<void> {
     safeguardPoolSize: Number(process.env.SAFEGUARD_POOL_SIZE ?? 2),
     pollIntervalMs: Number(process.env.NOS_POLL_INTERVAL_MS ?? 500),
     onEvent: heartbeatHandler,
+    mayor,
   });
+  runtimeRef = runtime;
 
   const monitor = new HeartbeatMonitor({
     onEvent: heartbeatHandler,

@@ -19,9 +19,12 @@ export type AuditEventType =
   | 'MAYOR_ADOPTION'        // Orphan workflow adoption (OBSERVABILITY.md §Audit Logging)
   | 'REFINERY_ESCALATION'   // Witness unanimous rejection → Refinery (ROLES.md §Refinery)
   | 'LOCKDOWN_EARLY'        // Pre-dispatch Safeguard scan blocked bead (HARDENING.md §3.3)
+  | 'LOCKDOWN_LATE'         // Post-500ms Safeguard scan rejected bead after Polecat already started
   | 'LOCKDOWN_BROADCAST'    // Lockdown broadcast to Mayor inbox
   | 'SECURITY_VIOLATION'    // SECURITY_VIOLATION convoy received by runtime
-  | 'REVIEW_VERDICT';       // Witness REVIEW_VERDICT received by runtime
+  | 'REVIEW_VERDICT'        // Witness REVIEW_VERDICT received by runtime
+  | 'CONVOY_BLOCKED'        // Bead blocked due to failed predecessor (HARDENING.md §2.3)
+  | 'BEAD_BLOCKED';         // Bead BLOCKED after 3 stalls (HARDENING.md §1.3)
 
 export interface AuditEntry {
   ts: string;

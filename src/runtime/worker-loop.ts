@@ -15,8 +15,9 @@ import { Witness } from '../roles/witness.js';
 import { SafeguardPool } from '../roles/safeguard.js';
 import { Ledger } from '../ledger/index.js';
 import { ConvoyBus } from '../convoys/bus.js';
-import type { Bead, ConvoyMessage, HeartbeatEvent } from '../types/index.js';
+import type { Bead, ConvoyMessage, HeartbeatEvent, ReviewVerdict } from '../types/index.js';
 import { auditLog } from '../hardening/audit.js';
+import type { Mayor } from '../roles/mayor.js';
 
 export interface WorkerRuntimeConfig {
   rigName: string;
@@ -26,6 +27,8 @@ export interface WorkerRuntimeConfig {
   safeguardPoolSize?: number;  // default: 2
   pollIntervalMs?: number;     // default: 500
   onEvent?: (event: HeartbeatEvent) => void;
+  /** Optional Mayor instance — used for Refinery escalation on REVIEW_VERDICT rejection */
+  mayor?: Mayor;
 }
 
 interface PolecatSlot {
@@ -46,6 +49,10 @@ export class WorkerRuntime {
   private witness: Witness;
   private polecats: PolecatSlot[];
 
+  private mayor: Mayor | null;
+  /** Stall counter per bead_id for POLECAT_STALLED re-queue / BLOCKED escalation */
+  private stallCounts = new Map<string, number>();
+
   private running = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -55,6 +62,7 @@ export class WorkerRuntime {
     this.kgPath = config.kgPath;
     this.pollIntervalMs = config.pollIntervalMs ?? 500;
     this.onEvent = config.onEvent;
+    this.mayor = config.mayor ?? null;
 
     this.bus = new ConvoyBus(config.rigName);
     this.ledger = new Ledger();
@@ -182,10 +190,74 @@ export class WorkerRuntime {
       return;
     }
     const bead: Bead = fullBead;
+
+    // HARDENING.md §2.3: Gate dispatch on needs predecessors reaching outcome:SUCCESS.
+    // If any predecessor is still pending/in_progress, re-queue for next poll.
+    // If any predecessor failed, emit CONVOY_BLOCKED and mark this bead failed.
+    if (bead.needs.length > 0) {
+      const latestByBead = new Map<string, Bead>();
+      for (const b of ledgerBeads) {
+        latestByBead.set(b.bead_id, b); // last record wins (append-only ledger)
+      }
+      for (const needId of bead.needs) {
+        const pred = latestByBead.get(needId);
+        if (!pred || pred.outcome !== 'SUCCESS') {
+          if (pred?.outcome === 'FAILURE' || pred?.status === 'failed') {
+            // Predecessor failed → CONVOY_BLOCKED
+            const reason = `predecessor ${needId} failed`;
+            auditLog('CONVOY_QUARANTINED', 'runtime', bead.bead_id, reason);
+            this.onEvent?.({ type: 'CONVOY_BLOCKED', bead_id: bead.bead_id, reason });
+            await this.ledger.appendBead(this.rigName, {
+              ...bead,
+              status: 'failed',
+              outcome: 'FAILURE',
+              updated_at: new Date().toISOString(),
+            });
+            // Notify Mayor mailbox
+            try {
+              await this.bus.send({
+                header: {
+                  sender_id: 'runtime',
+                  recipient: 'mayor',
+                  timestamp: new Date().toISOString(),
+                  seq: this.bus.getNextSeq('runtime'),
+                },
+                payload: {
+                  type: 'CONVOY_BLOCKED',
+                  data: { bead_id: bead.bead_id, reason, failed_predecessor: needId },
+                },
+                signature: 'ed25519:internal',
+              });
+            } catch { /* non-fatal */ }
+            return;
+          }
+          // Predecessor not yet done — re-queue for next poll
+          await this.bus.send({
+            header: {
+              sender_id: 'runtime',
+              recipient: 'polecat',
+              timestamp: new Date().toISOString(),
+              seq: this.bus.getNextSeq('runtime'),
+            },
+            payload: {
+              type: 'BEAD_DISPATCH',
+              data: {
+                bead_id: bead.bead_id,
+                plan_checkpoint_id: bead.plan_checkpoint_id ?? 'needs-wait',
+              },
+            },
+            signature: 'ed25519:internal',
+          });
+          return;
+        }
+      }
+    }
+
     // P9: Fire Safeguard scan asynchronously before Polecat starts.
     // 500ms window: if scan returns within 500ms and rejects → LOCKDOWN, don't dispatch.
     // If scan takes >500ms → Polecat starts; scan continues in background.
-    const scanPromise = this.safeguardPool.scan(JSON.stringify(bead));
+    // Pass task_type so lockdown KG triples are scoped to this task class (Gap 3).
+    const scanPromise = this.safeguardPool.scan(JSON.stringify(bead), 0, bead.task_type);
     const timeoutPromise = new Promise<null>((resolve) =>
       setTimeout(() => resolve(null), 500),
     );
@@ -221,9 +293,12 @@ export class WorkerRuntime {
 
     slot.busy = true;
 
-    // Background scan monitoring: if scan finishes after 500ms window and rejects, broadcast lockdown
+    // Background scan monitoring: if scan finishes after 500ms window and rejects, broadcast lockdown.
+    // Audit as LOCKDOWN_LATE so operators can distinguish post-dispatch lockdowns from pre-dispatch ones.
     void scanPromise.then((result) => {
       if (result && !result.approved) {
+        auditLog('LOCKDOWN_LATE', 'safeguard', bead.bead_id,
+          `Late scan rejected bead after 500ms window: ${result.lockdown?.lockdown_id ?? 'unknown'}`);
         void this.emitLockdownBroadcast(bead.bead_id, result.lockdown?.reason ?? 'security violation');
       }
     });
@@ -357,9 +432,31 @@ export class WorkerRuntime {
     }
 
     if (type === 'REVIEW_VERDICT') {
-      // Mayor may escalate to Refinery on rejection — logged but not auto-escalated here
-      auditLog('REVIEW_VERDICT', 'runtime', String(data['bead_id'] ?? ''),
-        `approved=${data['approved']}`);
+      const beadId = String(data['bead_id'] ?? '');
+      const approved = Boolean(data['approved']);
+      auditLog('REVIEW_VERDICT', 'runtime', beadId, `approved=${approved}`);
+
+      if (!approved && this.mayor) {
+        // Escalate to Refinery on unanimous Witness rejection (ROLES.md §Refinery)
+        const verdict = data['verdict'] as ReviewVerdict | undefined;
+        if (verdict) {
+          const beads = this.ledger.readBeads(this.rigName);
+          const bead = beads.find((b) => b.bead_id === beadId);
+          if (bead) {
+            // Attempts = number of ledger records for this bead (each attempt appends a new record)
+            const attempts = beads.filter((b) => b.bead_id === beadId).length;
+            void this.mayor.escalateToRefinery(bead, verdict, attempts)
+              .then((analysis) => {
+                if (analysis) {
+                  console.log(`[WorkerRuntime] Refinery escalation for ${beadId}: ${analysis.rootCause}`);
+                }
+              })
+              .catch((err: unknown) => {
+                console.warn(`[WorkerRuntime] Refinery escalation failed for ${beadId}: ${String(err)}`);
+              });
+          }
+        }
+      }
       return;
     }
 
@@ -369,7 +466,72 @@ export class WorkerRuntime {
       return;
     }
 
+    if (type === 'CONVOY_BLOCKED') {
+      auditLog('CONVOY_BLOCKED', 'runtime', String(data['bead_id'] ?? ''),
+        `failed_predecessor=${data['failed_predecessor'] ?? 'unknown'} reason=${data['reason'] ?? ''}`);
+      return;
+    }
+
     console.warn(`[WorkerRuntime] Unhandled mayor convoy type: ${type}`);
+  }
+
+  // ── POLECAT_STALLED handler ────────────────────────────────────────────────
+
+  /**
+   * Handle a POLECAT_STALLED heartbeat event (HARDENING.md §1.3).
+   * Per spec:
+   *   - stall 1–2: re-queue the bead for a new Polecat
+   *   - stall 3+:  mark bead BLOCKED, emit BEAD_BLOCKED heartbeat event
+   */
+  async handleStall(event: { bead_id: string; agent_id: string; stall_duration_ms: number }): Promise<void> {
+    const { bead_id } = event;
+    const count = (this.stallCounts.get(bead_id) ?? 0) + 1;
+    this.stallCounts.set(bead_id, count);
+
+    const beads = this.ledger.readBeads(this.rigName);
+    const bead = beads.find((b) => b.bead_id === bead_id);
+    if (!bead) return;
+
+    if (count >= 3) {
+      // Three stalls → BLOCKED escalation (HARDENING.md §1.3)
+      auditLog('BEAD_BLOCKED', 'runtime', bead_id,
+        `BLOCKED after ${count} stalls (${Math.round(event.stall_duration_ms / 1000)}s)`);
+      await this.ledger.appendBead(this.rigName, {
+        ...bead,
+        status: 'failed',
+        outcome: 'FAILURE',
+        updated_at: new Date().toISOString(),
+      });
+      this.onEvent?.({
+        type: 'BEAD_BLOCKED',
+        bead_id,
+        retry_count: count,
+      });
+      console.warn(`[WorkerRuntime] Bead ${bead_id} BLOCKED after ${count} stalls`);
+    } else {
+      // Re-queue for a new Polecat
+      console.warn(`[WorkerRuntime] Bead ${bead_id} stalled (attempt ${count}/3) — re-queuing`);
+      try {
+        await this.bus.send({
+          header: {
+            sender_id: 'runtime',
+            recipient: 'polecat',
+            timestamp: new Date().toISOString(),
+            seq: this.bus.getNextSeq('runtime'),
+          },
+          payload: {
+            type: 'BEAD_DISPATCH',
+            data: {
+              bead_id,
+              plan_checkpoint_id: bead.plan_checkpoint_id ?? 'stall-requeue',
+            },
+          },
+          signature: 'ed25519:internal',
+        });
+      } catch (err) {
+        console.error(`[WorkerRuntime] Failed to re-queue stalled bead ${bead_id}: ${String(err)}`);
+      }
+    }
   }
 
   // ── Lockdown broadcast ─────────────────────────────────────────────────────
