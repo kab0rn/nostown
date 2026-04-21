@@ -315,6 +315,11 @@ Playbook synthesis uses the Groq Batch API and retries on failure. Verify `GROQ_
 | [KNOWLEDGE_GRAPH.md](docs/KNOWLEDGE_GRAPH.md) | KG sync protocol, MIM conflict resolution, consistency model |
 | [OBSERVABILITY.md](docs/OBSERVABILITY.md) | OTel metrics, distributed tracing, alerting tiers |
 | [BUILDING.md](docs/BUILDING.md) | Build gates, implementation order, risk register |
+| [FORK_STRATEGY.md](docs/FORK_STRATEGY.md) | Fork evaluation criteria, branch strategy decisions |
+| [GAP_ANALYSIS.md](docs/GAP_ANALYSIS.md) | Feature gap analysis, parity tracking against roadmap |
+| [HOOK_SCHEMA.md](docs/HOOK_SCHEMA.md) | GasTown swarm hook wire schema, SwarmDelegateRequest/SlingResult spec |
+| [IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) | Phased implementation timeline, milestone tracking |
+| [RISKS.md](docs/RISKS.md) | Risk register, mitigations, known limitations |
 
 ---
 
