@@ -36,6 +36,14 @@ export function normalizeTimeoutMs(requested: number | undefined): number {
   return timeoutMs;
 }
 
+export function normalizeQuorumRatio(requested: number | undefined): number {
+  const ratio = requested ?? DEFAULT_BRIDGE_QUORUM;
+  if (!Number.isFinite(ratio) || ratio <= 0 || ratio > 1) {
+    throw new Error('quorumRatio must be in range (0, 1]');
+  }
+  return ratio;
+}
+
 export function maxBridgeWorkers(): number {
   return envPositiveInteger('NOS_MAX_BRIDGE_WORKERS') ?? DEFAULT_BRIDGE_MAX_WORKERS;
 }

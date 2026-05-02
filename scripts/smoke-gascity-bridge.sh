@@ -49,9 +49,7 @@ assert_json_error() {
 require_cmd go
 require_cmd node
 require_cmd npm
-require_cmd gc
 require_cmd bd
-require_cmd tmux
 
 mkdir -p "$TMP_DIR/bin" "$TMP_DIR/home" "$TMP_DIR/outside" "$TMP_DIR/comb"
 (cd "$PROJECT_DIR" && npm run build >/dev/null)
@@ -73,6 +71,10 @@ failure_json="$(
   nt gascity doctor || true
 )"
 printf '%s\n' "$failure_json" | assert_json_error
+
+echo "[smoke] watch option validation is local"
+watch_error="$(nt gascity watch --once --workers 0 || true)"
+printf '%s\n' "$watch_error" | assert_json_error
 
 echo "[smoke] pure stdin swarm"
 printf '%s\n' '{"schema":"gascity.swarm.v1","bead_id":"smoke-1","bead":{"id":"smoke-1","title":"Read-only smoke"},"mode":"pure","workers":1}' \

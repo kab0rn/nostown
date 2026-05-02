@@ -108,6 +108,10 @@ async function watch(args: string[]): Promise<number> {
     throw new Error(`gascity watch does not accept positional arguments: ${parsed.positionals.join(' ')}`);
   }
   const mode = normalizeBridgeMode(parsed.value('--mode'), 'apply');
+  const strategy = normalizeStrategy(parsed.value('--strategy'));
+  const quorumRatio = parseQuorumRatio(parsed.value('--quorum'));
+  const workers = parseWorkers(parsed.value('--workers'));
+  const timeoutMs = parsePositiveInteger(parsed.value('--timeout-ms'), '--timeout-ms');
   const intervalMs = parsePositiveInteger(parsed.value('--interval-ms'), '--interval-ms') ?? 5000;
   const once = parsed.has('--once');
   const bd = new BdClient();
@@ -121,10 +125,10 @@ async function watch(args: string[]): Promise<number> {
           bead_id: bead.id,
           bead,
           mode,
-          strategy: normalizeStrategy(parsed.value('--strategy')),
-          quorumRatio: parseQuorumRatio(parsed.value('--quorum')),
-          workers: parseWorkers(parsed.value('--workers')),
-          timeoutMs: parsePositiveInteger(parsed.value('--timeout-ms'), '--timeout-ms'),
+          strategy,
+          quorumRatio,
+          workers,
+          timeoutMs,
         }, { bd });
         process.stdout.write(JSON.stringify(result) + '\n');
       }

@@ -4,7 +4,7 @@ import { createProvider, defaultBridgeProviders, type ProviderAdapter } from '..
 import { BdClient } from './bd.js';
 import { writeComb } from './comb.js';
 import type { GasCityBridgeRequest, GasCityBridgeResult } from './types.js';
-import { DEFAULT_BRIDGE_QUORUM, normalizeTimeoutMs, normalizeWorkers } from './options.js';
+import { normalizeQuorumRatio, normalizeTimeoutMs, normalizeWorkers } from './options.js';
 import { metadataForResult } from './metadata.js';
 import { adjudicate, type ArbiterTrace } from './adjudication.js';
 import { invokeWorkers } from './workers.js';
@@ -38,12 +38,13 @@ export async function runGasCityBridge(
   }
   const workers = normalizeWorkers(request.workers);
   const timeoutMs = normalizeTimeoutMs(request.timeoutMs);
+  const quorumRatio = normalizeQuorumRatio(request.quorumRatio);
 
   const responses = await invokeWorkers(providers, workers, bead, request.instructions, timeoutMs, deps.signal);
   let result: GasCityBridgeResult;
   let arbiter: ArbiterTrace | undefined;
   try {
-    const consensus = resolveConsensus(responses, strategy, request.quorumRatio ?? DEFAULT_BRIDGE_QUORUM);
+    const consensus = resolveConsensus(responses, strategy, quorumRatio);
     result = resultFromConsensus(runId, request.bead_id, mode, consensus, responses.length, 'consensus');
   } catch (err) {
     const adjudicated = await adjudicate(
