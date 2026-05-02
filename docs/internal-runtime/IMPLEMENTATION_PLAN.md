@@ -1,5 +1,10 @@
 # NOS Town — Remaining Implementation Plan
 
+> Internal runway note: this plan covers deeper legacy/future runtime wiring.
+> It does not redefine the current public surface. The active product spine is
+> `nt` Queen UX, `nt gascity ...` JSON bridge adapter, and static Gas City
+> integration through `city.toml` only.
+
 Derived from the gap analysis against the product vision (see `docs/` specs). Items are ordered by priority: operational blockers first, then architectural violations, then polish. Each item states current state, exact change required, and acceptance criteria.
 
 **Baseline:** 494 tests passing, typecheck clean, all hardening invariants have green tests. The infrastructure layer (Ledger, KG, Groq failover, Convoy signing, Safeguard pool, Heartbeat, Hooks, Swarm) is complete. The gaps are in runtime wiring and the Historian→Mayor feedback loop.

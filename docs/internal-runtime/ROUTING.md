@@ -1,5 +1,9 @@
 # NOS Town Routing - Intelligence & Cost Optimized
 
+> Internal runway note: dynamic routing is a future internal runtime capability.
+> It must not leak into the role-neutral Gas City bridge schema or require Gas
+> City changes beyond `city.toml`.
+
 Model routing strategies and escalation patterns for the NOS Town multi-agent system, featuring the Preview-Primary escalation protocol and KG-backed Playbook routing.
 
 ---

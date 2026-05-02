@@ -1,5 +1,9 @@
 # NOS Town Groq Integration — Performance Engine 
 
+> Internal runway note: this document describes deeper provider/runtime plans.
+> The current public bridge still exposes only role-neutral worker, consensus,
+> and Arbiter results through `nt gascity`.
+
 Groq API configuration, Batch processing, and model selection for the NOS Town multi-agent system.
 
 ---

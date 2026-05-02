@@ -1,5 +1,9 @@
 # NOS Town Knowledge Graph — SQLite Triple Store
 
+> Internal runway note: the KG is a future internal capability for NOSTown.
+> Current Gas City integration does not require KG state or expose KG concepts in
+> bridge schemas.
+
 The NOS Town Knowledge Graph (KG) is a temporal SQLite triple store at `kg/knowledge_graph.sqlite`. It is the authoritative source for model routing state, Witness council votes, architectural decisions, and team assignments across all NOS Town sessions. No external memory server is required — agents access the KG directly via `src/kg/`.
 
 ---
@@ -261,7 +265,7 @@ Before the Historian has enough Bead data to write KG routing triples (first wee
 
 ```bash
 # Run once on first startup to seed KG from static routing table:
-npx tsx src/historian/bootstrap-kg.ts --routing-table docs/ROUTING.md
+npx tsx src/historian/bootstrap-kg.ts --routing-table docs/internal-runtime/ROUTING.md
 ```
 
 Once 100+ Beads have been processed by the Historian, the bootstrap triples are superseded by empirical routing locks and the static table is no longer consulted.

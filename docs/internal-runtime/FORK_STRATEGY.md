@@ -1,5 +1,9 @@
 # NOS Town Fork Strategy — Upstream Sync & Divergence
 
+> Internal runway note: this file is historical architecture context. The active
+> Gas City relationship is adapter-only: NOSTown runtime -> bridge adapter ->
+> static Gas City configured through `city.toml`.
+
 Architectural relationship between NOS Town and the upstream Gas Town project.
 
 ---
@@ -86,7 +90,7 @@ npm test  # KG integration tests cover this
 
 - **Core Architectural Fixes:** Bug fixes in the Bead or Hook logic should be submitted to **Gas Town Upstream** first.
 - **Performance/Model Enhancements:** Groq-specific optimizations, new Council patterns, or Historian logic should be submitted to **NOS Town**.
-- **KG Schema Changes:** Triple vocabulary additions or consistency rule changes live in `docs/KNOWLEDGE_GRAPH.md` and `src/kg/`.
+- **KG Schema Changes:** Triple vocabulary additions or consistency rule changes live in `docs/internal-runtime/KNOWLEDGE_GRAPH.md` and `src/kg/`.
 - **Compatibility:** Always verify that NOS Town remains capable of reading a standard Gas Town ledger after any schema changes.
 
 ---

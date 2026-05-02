@@ -1,5 +1,9 @@
 # Hook Schema
 
+> Internal runway note: hook compatibility is legacy/future runtime material.
+> The active Gas City bridge uses only `city.toml`, inherited environment, `bd`,
+> and bead metadata.
+
 NOS Town implements Gas Town's `.hook` file format for defining agent behaviors. This document provides the full schema specification and validation rules.
 
 ## Hook File Format

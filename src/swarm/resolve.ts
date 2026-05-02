@@ -24,8 +24,22 @@ export function resolveConsensus(
   }
 }
 
-function canonicalize(obj: Record<string, unknown>): string {
-  return JSON.stringify(obj, Object.keys(obj).sort());
+export function canonicalize(obj: unknown): string {
+  return JSON.stringify(stableValue(obj));
+}
+
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return Object.keys(record)
+      .sort()
+      .reduce<Record<string, unknown>>((acc, key) => {
+        acc[key] = stableValue(record[key]);
+        return acc;
+      }, {});
+  }
+  return value;
 }
 
 function majorityVote(
@@ -33,8 +47,21 @@ function majorityVote(
   invalid: AgentResponse[],
   strategy: Strategy
 ): ConsensusResult {
+  const result = pluralityVote(valid, invalid, strategy);
+  if (result.agreement <= 0.5) {
+    throw new Error(`majority strategy: no candidate exceeded 50% agreement (${(result.agreement * 100).toFixed(0)}%)`);
+  }
+  return result;
+}
+
+function pluralityVote(
+  valid: AgentResponse[],
+  invalid: AgentResponse[],
+  strategy: Strategy
+): ConsensusResult {
   const counts = new Map<string, number>();
   const byKey = new Map<string, Record<string, unknown>>();
+  const total = valid.length + invalid.length;
 
   for (const r of valid) {
     const key = canonicalize(r.parsed!);
@@ -48,22 +75,45 @@ function majorityVote(
     if (count > maxCount) { maxCount = count; winnerKey = key; }
   }
 
-  const agreement = maxCount / valid.length;
+  const agreement = maxCount / total;
   const discarded = [...valid.filter(r => canonicalize(r.parsed!) !== winnerKey), ...invalid];
 
-  return { winner: byKey.get(winnerKey)!, strategy, agreement, responses: valid, discarded };
+  return {
+    winner: byKey.get(winnerKey)!,
+    strategy,
+    agreement,
+    agreedCount: maxCount,
+    totalResponses: total,
+    invalidCount: invalid.length,
+    adjudicated: false,
+    responses: [...valid, ...invalid],
+    discarded,
+  };
 }
 
 function unanimousVote(valid: AgentResponse[], invalid: AgentResponse[], strategy: Strategy): ConsensusResult {
+  if (invalid.length > 0) {
+    throw new Error('unanimous strategy: one or more agents failed to produce valid JSON');
+  }
   const first = canonicalize(valid[0].parsed!);
   if (!valid.every(r => canonicalize(r.parsed!) === first)) {
     throw new Error('unanimous strategy: agents disagreed');
   }
-  return { winner: valid[0].parsed!, strategy, agreement: 1.0, responses: valid, discarded: invalid };
+  return {
+    winner: valid[0].parsed!,
+    strategy,
+    agreement: 1.0,
+    agreedCount: valid.length,
+    totalResponses: valid.length,
+    invalidCount: 0,
+    adjudicated: false,
+    responses: valid,
+    discarded: invalid,
+  };
 }
 
 function firstQuorumVote(valid: AgentResponse[], invalid: AgentResponse[], strategy: Strategy, ratio: number): ConsensusResult {
-  const result = majorityVote(valid, invalid, strategy);
+  const result = pluralityVote(valid, invalid, strategy);
   if (result.agreement < ratio) {
     throw new Error(`first_quorum: ${(result.agreement * 100).toFixed(0)}% agreement below ${(ratio * 100).toFixed(0)}% threshold`);
   }

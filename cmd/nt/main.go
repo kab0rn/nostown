@@ -1,18 +1,12 @@
-// nt — NOS Town CLI
+// nt is the NOSTown operator CLI.
 //
-// Single launch command and plain-text task interface for NOS Town.
-// Mirrors the `gt` UX from Gas Town: one command to bring everything up,
-// then just type what you want.
-//
-// Commands:
-//
-//	nt status       Show service health
-//	nt prime        Print session context (for Claude Code injection)
-//	nt              Interactive REPL (launches Node.js Mayor session)
-//	nt <task>       One-shot task orchestration (plain text, no prefix needed)
+// The human shell is the Queen: a persistent tmux-backed operator session.
+// Gas City bridge commands are non-interactive and JSON-safe.
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,75 +14,271 @@ import (
 	"strings"
 )
 
-const version = "0.1.0"
+const (
+	version     = "0.1.0"
+	queenSess   = "nt-queen"
+	queenTarget = "nt-queen:0.0"
+)
 
-// ── Entry point ───────────────────────────────────────────────────────────────
+type dotEnvEntry struct {
+	key   string
+	value string
+}
 
 func main() {
 	args := os.Args[1:]
-
 	if len(args) == 0 {
-		nosHome := mustFindNosHome()
-		launchNode(nosHome, "--interactive")
+		cmdQueenAttach()
 		return
 	}
 
 	switch args[0] {
+	case "queen", "q":
+		runQueen(args[1:])
+	case "hive":
+		runHive(args[1:])
+	case "gascity":
+		launchBridgeNode(append([]string{"gascity"}, args[1:]...))
+	case "swarm":
+		launchBridgeNode(append([]string{"swarm"}, args[1:]...))
 	case "status":
-		cmdStatus()
+		cmdHiveStatus()
 	case "prime":
 		cmdPrime()
 	case "historian":
-		// One-shot Historian run: nt historian [rig]
 		nosHome := mustFindNosHome()
-		arg := "historian"
-		if len(args) > 1 {
-			arg = "historian " + strings.Join(args[1:], " ")
-		}
-		launchNode(nosHome, arg)
+		launchNode(nosHome, append([]string{"historian"}, args[1:]...))
 	case "bootstrap":
-		// Seed KG from static routing table: nt bootstrap [--routing-table <path>]
-		nosHome := mustFindNosHome()
-		routingTable := filepath.Join(nosHome, "docs", "ROUTING.md")
-		if len(args) > 2 && args[1] == "--routing-table" {
-			routingTable = args[2]
-		}
-		bootstrapScript := filepath.Join(nosHome, "src", "historian", "bootstrap-kg.ts")
-		cmd := exec.Command("npx", "tsx", bootstrapScript, "--routing-table", routingTable)
-		cmd.Dir = nosHome
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Env = buildEnv(nosHome)
-		if err := cmd.Run(); err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				os.Exit(exitErr.ExitCode())
-			}
-			os.Exit(1)
-		}
+		cmdBootstrap(args[1:])
 	case "help", "--help", "-h":
 		printHelp()
 	case "version", "--version", "-v":
 		fmt.Printf("nt %s\n", version)
 	default:
-		// Everything else → plain-text task
-		nosHome := mustFindNosHome()
-		task := strings.Join(args, " ")
-		launchNode(nosHome, task)
+		// Plain text no longer drives the legacy role runtime from the wrapper.
+		// Bring up the Queen shell and let the operator choose bridge actions.
+		cmdQueenAttach()
 	}
 }
 
-// ── Project root discovery ────────────────────────────────────────────────────
+func runQueen(args []string) {
+	sub := "attach"
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	switch sub {
+	case "attach", "at":
+		cmdQueenAttach()
+	case "start":
+		if err := startQueen(false); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("Queen started. Attach with: nt queen attach\n")
+	case "stop":
+		if err := killQueen(); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("Queen stopped.\n")
+	case "restart":
+		_ = killQueen()
+		if err := startQueen(true); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("Queen restarted. Attach with: nt queen attach\n")
+	case "status":
+		cmdQueenStatus()
+	default:
+		fatal(fmt.Errorf("unknown queen command %q", sub))
+	}
+}
 
-// findNosHome resolves the NOS Town project root via three mechanisms:
-//  1. NOS_HOME environment variable
-//  2. ~/.nostown/home config file (written by install-nt.sh)
-//  3. Walk up from cwd looking for nos-town package.json
+func runHive(args []string) {
+	if len(args) == 0 || args[0] == "status" {
+		cmdHiveStatus()
+		return
+	}
+	fatal(fmt.Errorf("unknown hive command %q", args[0]))
+}
+
+func cmdQueenAttach() {
+	if err := ensureQueen(); err != nil {
+		fatal(err)
+	}
+	if os.Getenv("TMUX") != "" {
+		if err := runInteractive("tmux", "switch-client", "-t", queenSess); err == nil {
+			return
+		}
+	}
+	if err := runInteractive("tmux", "attach-session", "-t", queenSess); err != nil {
+		fatal(err)
+	}
+}
+
+func cmdQueenStatus() {
+	if !hasSession(queenSess) {
+		fmt.Println("Queen is not running")
+		return
+	}
+	cmd := paneCommand()
+	state := "running"
+	if isShell(cmd) || cmd == "" {
+		state = "stale"
+	}
+	fmt.Printf("Queen is %s\n", state)
+	fmt.Printf("  Session: %s\n", queenSess)
+	fmt.Printf("  Pane:    %s\n", cmd)
+}
+
+func cmdHiveStatus() {
+	nosHome, err := findNosHome()
+	if err != nil {
+		nosHome = "(not found)"
+	} else {
+		applyDotEnv(nosHome)
+	}
+	fmt.Printf("NOSTown Hive\n")
+	fmt.Printf("    Queen       %s\n", queenStatusText())
+	fmt.Printf("    Comb        %s\n", filepath.Join(nosHome, "comb"))
+	fmt.Printf("    Project     %s\n", nosHome)
+	fmt.Printf("    Groq        %s\n", configured(os.Getenv("GROQ_API_KEY") != ""))
+	fmt.Printf("    DeepSeek    %s\n", configured(os.Getenv("DEEPSEEK_API_KEY") != ""))
+}
+
+func cmdPrime() {
+	nosHome, err := findNosHome()
+	if err != nil {
+		nosHome = "(not found — set NOS_HOME)"
+	}
+	fmt.Printf(`# NOSTown Queen Context
+
+Queen: operator shell
+Hive: local NOSTown runtime
+Comb: %s
+
+## Interaction model
+
+  nt                 Attach to the Queen shell
+  nt queen attach    Attach to the persistent Queen shell
+  nt hive status     Show runtime status
+  nt swarm <bead>    Run pure swarm consensus
+
+## Gas City bridge
+
+Gas City stays static. Add only city.toml configuration:
+
+[[agent]]
+name = "nostown"
+scope = "city"
+min_active_sessions = 0
+max_active_sessions = 1
+work_query = "printf ''"
+sling_query = "nt gascity swarm --bead {} --mode apply --json"
+
+Bridge protocol terms stay generic: worker, judge, arbiter, consensus.
+
+Project: %s
+`, filepath.Join(nosHome, "comb"), nosHome)
+}
+
+func cmdBootstrap(args []string) {
+	nosHome := mustFindNosHome()
+	routingTable := filepath.Join(nosHome, "docs", "ROUTING.md")
+	if len(args) > 1 && args[0] == "--routing-table" {
+		routingTable = args[1]
+	}
+	bootstrapScript := filepath.Join(nosHome, "src", "historian", "bootstrap-kg.ts")
+	cmd := exec.Command("npx", "tsx", bootstrapScript, "--routing-table", routingTable)
+	cmd.Dir = nosHome
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = buildEnv(nosHome)
+	exitWith(cmd.Run())
+}
+
+func ensureQueen() error {
+	if !hasSession(queenSess) {
+		fmt.Println("Queen session not running, starting...")
+		return startQueen(true)
+	}
+	if isShell(paneCommand()) {
+		fmt.Println("Queen runtime exited, respawning...")
+		return respawnQueen()
+	}
+	return nil
+}
+
+func startQueen(_ bool) error {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return fmt.Errorf("tmux is required for nt queen attach: %w", err)
+	}
+	if hasSession(queenSess) {
+		return fmt.Errorf("Queen session already running")
+	}
+	nosHome := mustFindNosHome()
+	applyDotEnv(nosHome)
+	return run("tmux", "new-session", "-d", "-s", queenSess, "-c", nosHome, queenCommand(nosHome))
+}
+
+func respawnQueen() error {
+	nosHome := mustFindNosHome()
+	applyDotEnv(nosHome)
+	return run("tmux", "respawn-pane", "-k", "-t", queenTarget, "-c", nosHome, queenCommand(nosHome))
+}
+
+func killQueen() error {
+	if !hasSession(queenSess) {
+		return nil
+	}
+	return run("tmux", "kill-session", "-t", queenSess)
+}
+
+func queenCommand(nosHome string) string {
+	name, args := nodeInvocation(nosHome, []string{"queen-shell"})
+	parts := []string{"cd", shellQuote(nosHome), "&&", "exec", "env", "NOS_HOME=" + shellQuote(nosHome), shellQuote(name)}
+	for _, arg := range args {
+		parts = append(parts, shellQuote(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func hasSession(name string) bool {
+	return exec.Command("tmux", "has-session", "-t", name).Run() == nil
+}
+
+func paneCommand() string {
+	var stdout bytes.Buffer
+	cmd := exec.Command("tmux", "display-message", "-p", "-t", queenTarget, "#{pane_current_command}")
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(stdout.String())
+}
+
+func isShell(cmd string) bool {
+	switch filepath.Base(cmd) {
+	case "sh", "bash", "zsh", "fish", "tcsh", "csh":
+		return true
+	default:
+		return false
+	}
+}
+
+func queenStatusText() string {
+	if !hasSession(queenSess) {
+		return "stopped"
+	}
+	if isShell(paneCommand()) {
+		return "stale"
+	}
+	return "running"
+}
+
 func findNosHome() (string, error) {
 	if h := os.Getenv("NOS_HOME"); h != "" {
 		return filepath.Abs(h)
 	}
-
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
 		configFile := filepath.Join(homeDir, ".nostown", "home")
@@ -98,8 +288,6 @@ func findNosHome() (string, error) {
 			}
 		}
 	}
-
-	// Walk up from cwd
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine cwd: %w", err)
@@ -116,169 +304,241 @@ func findNosHome() (string, error) {
 		}
 		dir = parent
 	}
-
-	return "", fmt.Errorf("NOS Town project not found\n" +
-		"  Fix: set NOS_HOME env var, or run install-nt.sh, or cd into the project")
+	return "", fmt.Errorf("NOSTown project not found; set NOS_HOME, run install-nt.sh, or cd into the project")
 }
 
 func mustFindNosHome() string {
 	path, err := findNosHome()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
+		fatal(err)
 	}
 	return path
 }
 
-// ── nt status ─────────────────────────────────────────────────────────────────
-
-func cmdStatus() {
-	nosHome, err := findNosHome()
-	if err != nil {
-		nosHome = "(not found)"
-	}
-
-	agentID := envOrDefault("NOS_AGENT_ID", "mayor_01")
-	rig := envOrDefault("NOS_RIG", "default")
-	kgPath := envOrDefault("NOS_KG_PATH", "kg/knowledge_graph.sqlite")
-
-	fmt.Printf("NOS Town Status\n")
-	fmt.Printf("    Mayor       %s\n", agentID)
-	fmt.Printf("    Rig         %s\n", rig)
-	fmt.Printf("    KG          %s\n", kgPath)
-	fmt.Printf("    Project     %s\n", nosHome)
-}
-
-// ── nt prime ──────────────────────────────────────────────────────────────────
-
-func cmdPrime() {
-	nosHome, err := findNosHome()
-	if err != nil {
-		nosHome = "(not found — set NOS_HOME)"
-	}
-
-	agentID := envOrDefault("NOS_AGENT_ID", "mayor_01")
-	rig := envOrDefault("NOS_RIG", "default")
-	kgPath := envOrDefault("NOS_KG_PATH", "kg/knowledge_graph.sqlite")
-
-	fmt.Printf(`# NOS Town Context
-
-Mayor: %s  |  Rig: %s  |  KG: %s
-
-## Interaction model
-
-Just type what you want — no syntax or command prefixes:
-
-  nt add pagination to the witness vote API
-  nt fix the convoy signature check
-  nt refactor the KG query cache
-
-## Commands
-
-  nt status       Show service health
-  nt prime        Print this context
-  nt <task>       Orchestrate a task (one-shot)
-  nt              Interactive REPL
-
-## Architecture
-
-  Mayor (orchestrator)    src/roles/mayor.ts
-  Convoys (message bus)   src/convoys/
-  KG (model routing)      src/kg/   [%s]
-  Full docs:              docs/
-
-## Project
-
-  %s
-`, agentID, rig, kgPath, kgPath, nosHome)
-}
-
-// ── Launch Node.js ─────────────────────────────────────────────────────────────
-
-// launchNode runs `npx tsx src/index.ts <arg>` with stdin/stdout/stderr
-// connected to the terminal, then exits with the same code as Node.js.
-func launchNode(nosHome, arg string) {
-	entrypoint := filepath.Join(nosHome, "src", "index.ts")
-
-	cmd := exec.Command("npx", "tsx", entrypoint, arg)
+func launchNode(nosHome string, args []string) {
+	name, cmdArgs := nodeInvocation(nosHome, args)
+	cmd := exec.Command(name, cmdArgs...)
 	cmd.Dir = nosHome
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = buildEnv(nosHome)
+	exitWith(cmd.Run())
+}
 
-	if err := cmd.Run(); err != nil {
+func launchBridgeNode(args []string) {
+	nosHome, err := findNosHome()
+	if err != nil {
+		writeBridgeError(args, err)
+		os.Exit(1)
+	}
+	name, cmdArgs := nodeInvocation(nosHome, args)
+	cmd := exec.Command(name, cmdArgs...)
+	cmd.Dir = nosHome
+	cmd.Stdin = os.Stdin
+	cmd.Env = buildEnv(nosHome)
+	if isBridgeWatch(args) {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err = cmd.Run()
+		if err == nil {
+			return
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		writeBridgeError(args, err)
+		os.Exit(1)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	if stderr.Len() > 0 {
+		_, _ = os.Stderr.Write(stderr.Bytes())
+	}
+	if err == nil {
+		_, _ = os.Stdout.Write(stdout.Bytes())
+		return
+	}
+	if stdoutLooksJson(stdout.Bytes()) {
+		_, _ = os.Stdout.Write(stdout.Bytes())
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			os.Exit(exitErr.ExitCode())
 		}
 		os.Exit(1)
 	}
+	if stdout.Len() > 0 {
+		fmt.Fprintf(os.Stderr, "[nt gascity] discarded non-json stdout from failed bridge command: %s\n", strings.TrimSpace(limitString(stdout.String(), 500)))
+	}
+	writeBridgeError(args, err)
+	os.Exit(1)
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+func nodeInvocation(nosHome string, args []string) (string, []string) {
+	distEntrypoint := filepath.Join(nosHome, "dist", "index.js")
+	if _, err := os.Stat(distEntrypoint); err == nil {
+		return "node", append([]string{distEntrypoint}, args...)
+	}
+	srcEntrypoint := filepath.Join(nosHome, "src", "index.ts")
+	return "npx", append([]string{"tsx", srcEntrypoint}, args...)
+}
 
-// buildEnv merges the current environment with any KEY=VALUE pairs from
-// $NOS_HOME/.env, skipping keys that are already set in the environment.
+func isBridgeWatch(args []string) bool {
+	return len(args) >= 2 && args[0] == "gascity" && args[1] == "watch"
+}
+
+func stdoutLooksJson(data []byte) bool {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return false
+	}
+	var payload any
+	return json.Unmarshal(trimmed, &payload) == nil
+}
+
+func limitString(value string, max int) string {
+	if len(value) <= max {
+		return value
+	}
+	return value[:max] + "..."
+}
+
 func buildEnv(nosHome string) []string {
 	env := os.Environ()
-
-	envFile := filepath.Join(nosHome, ".env")
-	data, err := os.ReadFile(envFile)
-	if err != nil {
-		return env
+	if os.Getenv("NOS_HOME") == "" {
+		env = append(env, "NOS_HOME="+nosHome)
 	}
-
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+	for _, entry := range readDotEnv(nosHome) {
+		if os.Getenv(entry.key) != "" {
 			continue
 		}
-		idx := strings.IndexByte(line, '=')
-		if idx < 1 {
-			continue
-		}
-		key := strings.TrimSpace(line[:idx])
-		if key == "" || os.Getenv(key) != "" {
-			continue // already set in environment — don't override
-		}
-		env = append(env, line)
+		env = append(env, entry.key+"="+entry.value)
 	}
-
 	return env
 }
 
-func envOrDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+func applyDotEnv(nosHome string) {
+	for _, entry := range readDotEnv(nosHome) {
+		if os.Getenv(entry.key) != "" {
+			continue
+		}
+		_ = os.Setenv(entry.key, entry.value)
 	}
-	return def
+}
+
+func readDotEnv(nosHome string) []dotEnvEntry {
+	data, err := os.ReadFile(filepath.Join(nosHome, ".env"))
+	if err != nil {
+		return nil
+	}
+	var entries []dotEnvEntry
+	for _, line := range strings.Split(string(data), "\n") {
+		if entry, ok := parseDotEnvLine(line); ok {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
+func parseDotEnvLine(line string) (dotEnvEntry, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return dotEnvEntry{}, false
+	}
+	idx := strings.IndexByte(line, '=')
+	if idx < 1 {
+		return dotEnvEntry{}, false
+	}
+	key := strings.TrimSpace(line[:idx])
+	if key == "" {
+		return dotEnvEntry{}, false
+	}
+	return dotEnvEntry{key: key, value: strings.TrimSpace(line[idx+1:])}, true
+}
+
+func writeBridgeError(args []string, err error) {
+	fmt.Fprintf(os.Stderr, "[nt gascity] %s\n", err)
+	payload := map[string]any{
+		"ok":     false,
+		"schema": "gascity.swarm.result.v1",
+		"status": "error",
+		"error":  err.Error(),
+	}
+	if len(args) > 0 {
+		payload["command"] = args[0]
+	}
+	data, jsonErr := json.Marshal(payload)
+	if jsonErr != nil {
+		fmt.Println(`{"ok":false,"schema":"gascity.swarm.result.v1","status":"error","error":"bridge launch failed"}`)
+		return
+	}
+	fmt.Println(string(data))
+}
+
+func run(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func runInteractive(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func configured(ok bool) string {
+	if ok {
+		return "configured"
+	}
+	return "not configured"
+}
+
+func exitWith(err error) {
+	if err == nil {
+		return
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		os.Exit(exitErr.ExitCode())
+	}
+	os.Exit(1)
+}
+
+func fatal(err error) {
+	fmt.Fprintln(os.Stderr, "Error:", err)
+	os.Exit(1)
 }
 
 func printHelp() {
-	fmt.Print(`NOS Town — Groq-native multi-agent orchestration
+	fmt.Print(`NOSTown — Queen CLI and Gas City swarm bridge
 
 Usage:
-  nt                      Interactive session (REPL)
-  nt <task>               Orchestrate any task — plain text, no syntax
-  nt status               Show service health
-  nt prime                Print session context
-  nt historian [rig]      Run the Historian nightly pipeline once
-  nt bootstrap            Seed KG from static routing table (first-run)
+  nt                         Attach to Queen shell
+  nt queen attach            Start/attach Queen shell
+  nt queen start|stop|restart|status
+  nt hive status             Show local runtime status
+  nt swarm <bead>            Run pure swarm consensus
+  nt gascity swarm --bead <id> --mode pure|apply --json
+  nt gascity swarm --stdin --json
+  nt gascity watch --mode apply
+  nt gascity doctor
 
-Examples:
-  nt add rate limiting to the polecat dispatch loop
-  nt fix the convoy signature verification
-  nt refactor the KG query cache to use LRU eviction
-  nt what models are in the routing table?
-  nt historian            Mine playbooks and update KG routing
-  nt bootstrap            First-run KG seed (idempotent)
-
-Environment:
-  GROQ_API_KEY            Required — Groq Cloud API key
-  NOS_HOME                NOS Town project root (set by install-nt.sh)
-  NOS_AGENT_ID            Mayor agent ID (default: mayor_01)
-  NOS_RIG                 Active rig name (default: default)
-  NOS_KG_PATH             KG SQLite path (default: kg/knowledge_graph.sqlite)
-  HISTORIAN_CRON          Cron schedule for Historian (default: 0 2 * * *)
+Gas City city.toml:
+  [[agent]]
+  name = "nostown"
+  scope = "city"
+  min_active_sessions = 0
+  max_active_sessions = 1
+  work_query = "printf ''"
+  sling_query = "nt gascity swarm --bead {} --mode apply --json"
 `)
 }

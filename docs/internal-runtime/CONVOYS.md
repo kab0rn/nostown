@@ -1,5 +1,9 @@
 # Convoy & Mailbox System — Transport & Integrity
 
+> Internal runway note: Convoys are part of the legacy/future role runtime.
+> They are not the public Queen UX, `nt gascity` bridge schema, or Gas City
+> integration contract.
+
 Convoys are the primary mechanism for inter-agent message passing in NOS Town. This document defines the transport layer, the file-based mailbox convention, and the integrity verification protocol.
 
 ## 1. Convoy Structure

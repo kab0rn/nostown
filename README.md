@@ -1,327 +1,290 @@
-# NOS Town
+# NOSTown
 
-**Groq-native multi-agent orchestration system — agentic swarms, consensus councils, and persistent work tracking at nitrous speed.**
+Bridge-first swarm consensus runtime for Gas City, with a tmux-backed Queen CLI
+for operators and a JSON-safe adapter for `city.toml`.
 
----
+NOSTown's current product direction is deliberately narrow:
 
-## Overview
+- Gas City stays static.
+- The only Gas City integration point is `city.toml`.
+- `nt gascity ... --json` is automation-safe and writes JSON only to stdout.
+- Full swarm traces stay in NOSTown's local comb.
+- Gas City receives only compact `nos.consensus.*` metadata.
 
-NOS Town coordinates swarms of AI coding agents running on Groq's LPU™ architecture. Sub-second inference, parallel Witness councils, and a persistent knowledge graph enable workflows that are economically and technically impractical on conventional frontier models: multi-judge consensus, nightly institutional memory mining, and cross-session routing intelligence.
+## Architecture Contract
 
-**One process runs the system:**
-- **Node.js agent runtime** — Mayor, Polecat, Witness, Safeguard, Historian, Refinery (TypeScript)
+The boundary is fixed:
 
-Memory is provided by two persistence layers:
-- **Ledger** — append-only JSONL bead log (`rigs/<rig>/beads/current.jsonl`)
-- **Knowledge Graph** — SQLite triple store (`kg/knowledge_graph.sqlite`)
+```text
+NOSTown custom runtime -> bridge adapter -> static Gas City
+```
 
----
+Gas City can invoke NOSTown only through `city.toml` and the external
+`sling_query` command. The bridge may inherit shell environment, call `bd`, and
+read bead metadata. It must not require Gas City sessions, packs, formulas, or
+custom Gas City Go code.
 
-## Prerequisites
+The older Mayor/Polecat/Witness runtime still exists in the repository as
+internal runway for future swarm/runtime work. It is not the current UX, API, or
+Gas City bridge contract.
 
-| Requirement | Version | Notes |
-|---|---|---|
-| Node.js | 20+ | LTS recommended |
-| npm | 10+ | Included with Node.js 20 |
-| Groq API key | — | `gsk_...` from [console.groq.com](https://console.groq.com) |
+## Public Surface
 
-**Optional:**
-- **Ollama** — local inference fallback when all Groq endpoints fail. Must be running before NOS Town starts; no auto-pull. Set `OLLAMA_URL` to enable.
+### Queen Operator CLI
 
----
+```bash
+nt
+nt queen attach
+nt queen start
+nt queen stop
+nt queen restart
+nt queen status
+nt hive status
+nt swarm <bead>
+```
+
+Bare `nt` aliases to `nt queen attach`. The Queen shell is a persistent tmux
+session named `nt-queen` with a `queen>` prompt.
+
+Inside the shell:
+
+- `/status` - show hive status
+- `/trail` - show recent comb records
+- `/show <bead>` - inspect a bead through `bd`
+- `/swarm <bead>` - run pure swarm consensus
+- `/doctor` - validate bridge prerequisites
+- `/gas` - print the Gas City `city.toml` snippet
+- `/help` - show shell commands
+- `/exit` - leave the shell
+
+### Gas City Adapter
+
+These commands are the bridge surface intended for `city.toml` and scripts:
+
+```bash
+nt gascity swarm --bead <id> --mode pure --json
+nt gascity swarm --bead <id> --mode apply --json
+nt gascity swarm --stdin --json
+nt gascity watch --mode apply
+nt gascity doctor
+```
+
+Bridge output is role-neutral: workers, judges, arbiter, strategy, agreement,
+and consensus. Beehive terms are UI/product language only. `majority` means a
+candidate exceeded 50% of total worker responses; weaker plurality is resolved
+through Arbiter and marked `adjudicated`.
+
+Supported bridge flags are strict. Unknown flags, missing values, invalid modes,
+bad ranges, and malformed stdin are rejected with a JSON error on stdout and
+diagnostics on stderr.
+
+```bash
+nt gascity swarm \
+  --bead <id> \
+  --mode pure|apply \
+  --strategy majority|unanimous|first_quorum \
+  --workers 1..9 \
+  --quorum 0.01..1 \
+  --timeout-ms 90000 \
+  --json
+```
+
+`nt swarm <bead>` is a convenience alias for pure JSON bridge mode. It keeps the
+same supported swarm flags but always forces `--mode pure`.
+
+## Gas City Configuration
+
+Configure a no-demand router agent. Do not set `max_active_sessions = 0`; Gas
+City treats that as zero capacity for routed work.
+
+```toml
+[[agent]]
+name = "nostown"
+scope = "city"
+min_active_sessions = 0
+max_active_sessions = 1
+work_query = "printf ''"
+sling_query = "nt gascity swarm --bead {} --mode apply --json"
+```
+
+Then route a bead:
+
+```bash
+gc sling nostown <bead-id>
+```
+
+Expected flow:
+
+1. Gas City resolves the bead and executes `sling_query`.
+2. `nt gascity swarm` loads bead data through `bd`.
+3. Provider workers run in parallel.
+4. NOSTown resolves consensus.
+5. Failed quorum/unanimous strategies can produce `status: "adjudicated"` when
+   valid worker output exists; that is intentionally not labeled consensus.
+6. `pure` mode emits a result and performs no bead writes.
+7. `apply` mode writes only namespaced `nos.consensus.*` metadata.
+8. Full run details are written to the local comb keyed by `run_id`.
+
+Metadata written in `apply` mode:
+
+- `nos.consensus.status`
+- `nos.consensus.run_id`
+- `nos.consensus.strategy`
+- `nos.consensus.agreement`
+- `nos.consensus.adjudicated`
+- `nos.consensus.summary`
+
+The bridge does not write `gc.routed_to`, start Gas City sessions, require
+packs, require formulas, or call Gas City internals.
+
+If applying metadata fails after the comb record is written, the bridge returns a
+structured `status: "error"` result with the comb path preserved. That is
+intentional: the comb is the durable local ledger, while Gas City metadata is a
+compact status projection.
 
 ## Installation
 
 ```bash
-# 1. Clone the repo
 git clone https://github.com/kab0rn/nostown
 cd nostown
-
-# 2. Install Node.js dependencies
 npm install
 ```
 
----
+Install `nt` on `PATH`:
 
-## Configuration
+```bash
+./scripts/install-nt.sh
+```
 
-### Required environment variable
+NOSTown must be discoverable through `NOS_HOME` or `~/.nostown/home`:
+
+```bash
+export NOS_HOME=/path/to/nostown
+```
+
+Validate the bridge environment:
+
+```bash
+nt gascity doctor
+```
+
+## Requirements
+
+| Requirement | Notes |
+|---|---|
+| Node.js 20+ | Runtime for the TypeScript CLI. |
+| npm 10+ | Used by the local wrappers. |
+| Go | Used by the `cmd/nt` lifecycle manager in development. |
+| tmux 3.0+ | Required for `nt queen attach`. |
+| bd | Required for Gas City bead reads/writes. |
+| `nt` on `PATH` | Required for `city.toml` execution. |
+
+Provider keys:
 
 ```bash
 export GROQ_API_KEY=gsk_...
+export DEEPSEEK_API_KEY=...
 ```
 
-NOS Town will refuse to start without it.
+For local tests or dry runs:
 
-### Full environment variable reference
+```bash
+export NOS_MOCK_PROVIDER=1
+```
 
-| Variable | Default | Description |
+Provider selection can be overridden with `NOS_BRIDGE_PROVIDERS`, for example:
+
+```bash
+export NOS_BRIDGE_PROVIDERS=groq:groq/compound,deepseek:deepseek-v4-pro
+```
+
+The development `scripts/nt.sh` wrapper and Go launcher load `.env` with simple
+`KEY=value` parsing only. They do not shell-source `.env` files.
+
+## Local Storage
+
+The comb stores full run traces outside Gas City's bead metadata.
+
+| Variable | Default | Purpose |
 |---|---|---|
-| `GROQ_API_KEY` | — | **Required.** Groq Cloud API key. |
-| `NOS_AGENT_ID` | `mayor_01` | Mayor agent identity (used in convoy headers and keys). |
-| `NOS_RIG` | `default` | Active rig name (maps to `rigs/<name>/`). |
-| `NOS_RIGS_ROOT` | `rigs/` | Root directory containing all rig subdirectories. |
-| `NOS_ROLE_KEY_DIR` | `keys/` | Directory holding Ed25519 `.key` / `.pub` files per agent. |
-| `NOS_CONVOY_SECRET` | — | Optional HMAC transport secret for convoy `transport_mac` field. |
-| `NOS_HOOKS_DIR` | `hooks/` | Directory scanned for `.hook` JSON event files. |
-| `NOS_AUDIT_DIR` | `nos/audit/` | Append-only audit log directory for sensitive operations. |
-| `NOS_QUARANTINE_DIR` | `nos/quarantine/` | Quarantine directory for convoy signature failures. |
-| `NOS_KG_PATH` | `kg/knowledge_graph.sqlite` | Knowledge graph SQLite path. |
-| `OLLAMA_URL` | — | Optional. Base URL for local Ollama (e.g. `http://localhost:11434`). Enables Tier B fallback after 60 s of Groq failures. |
-| `HISTORIAN_CRON` | `0 2 * * *` | Cron schedule for the Historian nightly pipeline. |
+| `NOS_HOME` | discovered from cwd or `~/.nostown/home` | NOSTown project root. |
+| `NOS_COMB_DIR` | `$NOS_HOME/comb` | Full bridge run history. |
+| `GROQ_API_KEY` | unset | Enables Groq provider. |
+| `DEEPSEEK_API_KEY` | unset | Enables DeepSeek provider. |
+| `NOS_MOCK_PROVIDER` | unset | Enables deterministic mock provider. |
+| `NOS_BRIDGE_PROVIDERS` | auto | Comma-separated provider pool. |
 
-### Minimal `.env` for development
+## Production Operations
 
-```bash
-GROQ_API_KEY=gsk_your_key_here
-NOS_AGENT_ID=mayor_01
-NOS_RIG=my-project
-```
-
----
-
-## Setup: Signing Keys
-
-Every agent that dispatches Convoy messages requires an Ed25519 key pair. Keys live in `keys/` by default (or `NOS_ROLE_KEY_DIR`).
-
-Generate keys for the standard roles:
-
-```bash
-npx tsx -e "
-import { generateKeyPair } from './src/convoys/sign.js';
-await generateKeyPair('mayor_01');
-await generateKeyPair('polecat_01');
-await generateKeyPair('witness_01');
-await generateKeyPair('safeguard_01');
-await generateKeyPair('historian_01');
-console.log('Keys written to keys/');
-"
-```
-
-This writes `keys/<id>.key` (private) and `keys/<id>.pub` (public). **Keep `.key` files out of git** — add `keys/*.key` to `.gitignore`.
-
-> `NOS_AGENT_ID` must match an existing key pair name. If you change the agent ID to `mayor_02`, run `generateKeyPair('mayor_02')` before starting.
-
----
-
-## Running
-
-```bash
-export GROQ_API_KEY=gsk_...
-export NOS_AGENT_ID=mayor_01
-export NOS_RIG=my-project
-
-# Orchestrate a task
-nt "Refactor the authentication middleware to use JWT"
-
-# Interactive REPL
-nt
-
-# Show system status
-nt status
-```
-
-### Running the Historian (nightly)
-
-The Historian is not scheduled automatically. Trigger it manually or via cron:
-
-```bash
-NOS_RIG=my-project npx tsx -e "
-import { Historian } from './src/roles/historian.js';
-const h = new Historian({ agentId: 'historian_01' });
-await h.runNightly('my-project');
-h.close();
-"
-```
-
-The Historian mines pattern clusters from the Ledger, generates Playbooks, and updates the Knowledge Graph with model routing decisions.
-
----
-
-## Directory Structure
-
-```
-nostown/
-├── src/                        # TypeScript source
-│   ├── roles/
-│   │   ├── mayor.ts            # Orchestrator: decomposes tasks, dispatches via convoy
-│   │   ├── polecat.ts          # Executor: resolves individual micro-beads
-│   │   ├── witness.ts          # Validator: multi-judge consensus council
-│   │   ├── safeguard.ts        # Sentry: real-time security scanning
-│   │   ├── historian.ts        # Miner: nightly institutional memory pipeline
-│   │   └── refinery.ts         # Synthesizer: high-capability reasoning pass
-│   ├── convoys/
-│   │   ├── bus.ts              # Convoy transport with per-rig JSONL mailboxes
-│   │   └── sign.ts             # Ed25519 signing + verification
-│   ├── ledger/index.ts         # Append-only bead ledger: checksums + mutex locking
-│   ├── groq/
-│   │   ├── provider.ts         # Groq SDK wrapper: retry, circuit breaker, Ollama fallback
-│   │   └── batch.ts            # Groq Batch API client (Historian synthesis)
-│   ├── kg/
-│   │   └── index.ts            # SQLite knowledge graph with MIM conflict resolution
-│   ├── swarm/
-│   │   ├── coordinator.ts      # Fork-join and rendezvous swarm patterns
-│   │   └── tools.ts            # detectCycles(), isRendezvousNode(), backpressure limits
-│   ├── monitor/heartbeat.ts    # Stall detection, MAYOR_MISSING, deadlock alerts
-│   ├── hardening/audit.ts      # Append-only audit log for lockdowns, votes, etc.
-│   ├── hooks/loader.ts         # .hook file loader and executor
-│   ├── routing/dispatcher.ts   # KG-backed model routing with temporal triple lookups
-│   ├── telemetry/
-│   │   ├── metrics.ts          # OpenTelemetry counters, histograms, gauges
-│   │   └── tracer.ts           # OTel distributed tracing (no-op until SDK wired)
-│   └── index.ts                # CLI entry point: nt <task> / nt status
-│
-├── scripts/
-│   └── nos.sh                  # CLI wrapper (runs src/index.ts via tsx)
-│
-├── keys/                       # Ed25519 key pairs (auto-created by generateKeyPair)
-├── rigs/                       # Per-project rig directories (auto-created by Ledger)
-│   └── <rig-name>/beads/current.jsonl
-├── kg/                         # Knowledge graph SQLite (auto-created on first run)
-├── hooks/                      # .hook event files (optional)
-├── docs/                       # Specification documents
-└── tests/
-    ├── unit/                   # Isolated tests (Groq mocked)
-    └── integration/            # Integration tests (real SQLite, mocked Groq)
-```
-
----
-
-## Model Strategy
-
-NOS Town uses a preview-primary strategy: latest Groq preview models for speed and capability, with stable fallbacks for production reliability.
-
-> Preview models (`llama-4-scout`, `qwen3-32b`) are **not recommended for production** without confirmed Groq GA status. The stable fallbacks are production-grade.
-
-| Role | Primary (Preview) | Stable Fallback |
-|---|---|---|
-| Mayor | `groq/compound` | `llama-3.3-70b-versatile` |
-| Polecat | `meta-llama/llama-4-scout-17b-16e-instruct` | `llama-3.1-8b-instant` |
-| Witness | `qwen/qwen3-32b` | `llama-3.3-70b-versatile` |
-| Refinery | `openai/gpt-oss-120b` | `llama-3.3-70b-versatile` |
-| Safeguard | `openai/gpt-oss-safeguard-20b` | `openai/gpt-oss-20b` |
-| Historian (batch) | Groq Batch API + `llama-3.3-70b-versatile` | — |
-
-The Mayor's routing table is KG-backed: model promotions and demotions are written as temporal triples and persist across sessions.
-
----
+- Install `nt` with `./scripts/install-nt.sh`, then verify `nt` is on `PATH`.
+- Run `nt gascity doctor` from the same shell environment Gas City will inherit.
+- Add only the `city.toml` router-agent config shown above; Gas City stays
+  static except `city.toml`.
+- Keep `NOS_COMB_DIR` on a local writable disk. Comb records are the long-form
+  ledger; Gas City metadata is only compact status.
+- Bridge failures write JSON to stdout and diagnostics to stderr. If the Node
+  bridge crashes before emitting JSON, the Go `nt` launcher emits a structured
+  JSON error for one-shot bridge commands.
+- Provider details, timings, invalid outputs, Arbiter traces, and deterministic
+  fallback details live in the comb only. Obvious secret-like values are redacted
+  before comb write.
 
 ## Development
 
 ```bash
-# Type-check without building
 npm run typecheck
-
-# Compile TypeScript to dist/
 npm run build
-
-# Run all tests
-npm test
-
-# Unit tests only — no live services required
 npm run test:unit
-
-# Integration tests only
-npm run test:integration
+npm test
+(cd cmd/nt && go test ./...)
+npm run test:ci
+npm run smoke:gascity
 ```
 
----
+## Repository Map
 
-## Key Assumptions
-
-1. **Key pairs must exist for every `NOS_AGENT_ID` used.** A missing key causes `Mayor key not found for <id>` on first convoy dispatch. Generate them before the first run.
-
-2. **`NOS_RIGS_ROOT` must be writable.** The Ledger creates `rigs/<rig>/beads/current.jsonl` automatically. Default is `rigs/` relative to the project root.
-
-3. **`GROQ_API_KEY` must be valid and have quota.** The Groq provider has a circuit breaker: 5 consecutive failures open it for 60 s. Without `OLLAMA_URL`, the system enters degraded mode during that window.
-
-4. **Ollama (if used) must be running before NOS Town starts.** The provider checks `GET $OLLAMA_URL/api/tags` at startup. If unreachable, it logs a warning and disables the fallback for the session.
-
-5. **Ed25519 private key files (`*.key`) must not be committed to git.** Add `keys/*.key` to `.gitignore`. Public keys (`*.pub`) are safe to commit.
-
-6. **The Historian runs on demand, not automatically.** Wire it to a cron job or trigger it manually. Pattern clusters and routing KG updates accumulate nightly.
-
-7. **`NOS_AGENT_ID` is part of the key identity.** It appears in convoy `sender_id` headers and maps to `keys/<NOS_AGENT_ID>.key`. Changing it without generating the matching key pair will break convoy dispatch.
-
----
-
-## Architecture Overview
-
+```text
+nostown/
+├── cmd/nt/                 # Go lifecycle manager for the nt binary
+├── src/cli/                # Queen shell and hive status UI
+├── src/gascity/            # Role-neutral Gas City bridge adapter
+├── src/providers/          # Groq, DeepSeek, and mock provider adapters
+├── src/swarm/              # Consensus primitives
+├── src/roles/              # Legacy/internal role runtime
+├── docs/GASCITY_BRIDGE.md  # Bridge contract and city.toml flow
+├── docs/QUEEN_CLI.md       # Operator shell behavior
+├── docs/internal-runtime/  # Legacy/future Mayor/Polecat/Witness runway docs
+└── tests/                  # Unit and integration tests
 ```
-NOS Town
-│
-├── Mayor (groq/compound)
-│   ├── Ledger read (orphan recovery)        ← in-progress/pending beads
-│   ├── KG routing lookup                    ← model locks, demotions
-│   ├── Dependency cycle detection           ← DFS reject at planning time
-│   ├── Local checkpoint (ckpt_<uuid>)       ← dispatch guard, session-scoped
-│   └── Convoy dispatch + heartbeat          ← Signed Ed25519, per-rig JSONL mailboxes
-│
-├── Rig: <project>
-│   ├── Beads ledger (current.jsonl)         ← Append-only, checksummed, mutex-locked
-│   ├── Polecats (Llama 3.1 8B)              ← Execution swarm, sub-second inference
-│   ├── Witness council (qwen3/70B)          ← Parallel multi-judge consensus
-│   └── Safeguard (gpt-oss-20b)              ← Real-time security sentry
-│
-├── Historian (Groq Batch API)
-│   ├── Mine patterns from Ledger            ← task_type, model, outcome clustering
-│   ├── AAAK manifest compression            ← Token-efficient Mayor context
-│   ├── Playbook synthesis (70B batch)       ← Golden path reasoning
-│   └── Routing KG updates                   ← Model promotions/demotions as triples
-│
-└── Knowledge Graph (kg/knowledge_graph.sqlite)        ← NOS_KG_PATH
-    ├── Model routing locks                   ← locked_to / demoted_from triples
-    ├── Witness council votes                 ← approved / rejected triples
-    ├── Architectural decisions               ← Refinery analysis triples
-    └── MIM conflict resolution              ← Temporal triple arbitration
-```
-
----
-
-## Troubleshooting
-
-**`Mayor key not found for mayor_01`**
-Run the key generation snippet above. Check that `NOS_ROLE_KEY_DIR` points to the directory containing the `.key` files.
-
-**`GROQ_API_KEY environment variable is required`**
-Export your Groq API key before running.
-
-**`Mayor WAITING_FOR_CAPACITY: N beads in-flight`**
-The in-flight bead limit is reached. Wait for existing beads to resolve, or adjust `maxPolecatBeads` in `DEFAULT_IN_FLIGHT_LIMITS` in `src/swarm/tools.ts`.
-
-**`DEPENDENCY_CYCLE detected in bead plan: A → B → A`**
-The Mayor's decomposition produced a circular `needs` dependency. Re-describe the task to remove the circular prerequisite.
-
-**`Replay attack detected: sender sent seq N but last was M`**
-A convoy arrived out of order. This is an intentional guard. The sender should retry with the correct sequence number.
-
-**Historian nightly run hangs or times out**
-Playbook synthesis uses the Groq Batch API and retries on failure. Verify `GROQ_API_KEY` is valid and has access to 70B models. In tests, mock `GroqProvider.executeInference` to avoid retry backoff.
-
----
 
 ## Documentation
 
 | Doc | Topic |
 |---|---|
-| [ROLES.md](docs/ROLES.md) | Role-by-role protocols, quality tuning |
-| [HISTORIAN.md](docs/HISTORIAN.md) | Nightly mining pipeline, playbook generation, AAAK manifest |
-| [ROUTING.md](docs/ROUTING.md) | Escalation ladder, KG routing, cross-rig tunnels |
-| [GROQ_INTEGRATION.md](docs/GROQ_INTEGRATION.md) | SDK setup, Batch API, model selection matrix |
-| [HARDENING.md](docs/HARDENING.md) | Production hardening: ledger integrity, signing, v1.0 test checklist |
-| [RESILIENCE.md](docs/RESILIENCE.md) | Failover logic, Ollama fallback, outage queue, crash recovery |
-| [CONVOYS.md](docs/CONVOYS.md) | Convoy transport: signing, replay prevention, failure quarantine |
-| [SWARM.md](docs/SWARM.md) | Fork-join patterns, rendezvous dispatch, dependency cycles |
-| [KNOWLEDGE_GRAPH.md](docs/KNOWLEDGE_GRAPH.md) | KG sync protocol, MIM conflict resolution, consistency model |
-| [OBSERVABILITY.md](docs/OBSERVABILITY.md) | OTel metrics, distributed tracing, alerting tiers |
-| [BUILDING.md](docs/BUILDING.md) | Build gates, implementation order, risk register |
-| [FORK_STRATEGY.md](docs/FORK_STRATEGY.md) | Fork evaluation criteria, branch strategy decisions |
-| [GAP_ANALYSIS.md](docs/GAP_ANALYSIS.md) | Feature gap analysis, parity tracking against roadmap |
-| [HOOK_SCHEMA.md](docs/HOOK_SCHEMA.md) | GasTown swarm hook wire schema, SwarmDelegateRequest/SlingResult spec |
-| [IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) | Phased implementation timeline, milestone tracking |
-| [RISKS.md](docs/RISKS.md) | Risk register, mitigations, known limitations |
+| [GASCITY_BRIDGE.md](docs/GASCITY_BRIDGE.md) | Static Gas City integration and JSON bridge contract |
+| [QUEEN_CLI.md](docs/QUEEN_CLI.md) | Queen shell and tmux lifecycle |
+| [docs/README.md](docs/README.md) | Public docs index |
+| [internal-runtime/SWARM.md](docs/internal-runtime/SWARM.md) | Legacy/internal swarm patterns |
+| [internal-runtime/GROQ_INTEGRATION.md](docs/internal-runtime/GROQ_INTEGRATION.md) | Legacy/internal Groq runtime details |
+| [internal-runtime/RESILIENCE.md](docs/internal-runtime/RESILIENCE.md) | Legacy/internal failover notes |
+| [internal-runtime/ROLES.md](docs/internal-runtime/ROLES.md) | Legacy/internal role runtime |
 
----
+## Troubleshooting
+
+**`nt gascity doctor` says `nt` is missing**
+Install the wrapper with `./scripts/install-nt.sh` or put an equivalent `nt`
+binary on `PATH`.
+
+**`nt gascity doctor` says `bd` is missing**
+Install Gas City's bead CLI and confirm it is available in the shell that runs
+`gc sling`.
+
+**`nt queen attach` fails with missing tmux**
+Install tmux. The Queen shell intentionally uses a persistent terminal session.
+
+**Bridge commands print diagnostics**
+For `nt gascity ... --json`, diagnostics are written to stderr. Stdout remains a
+single JSON payload or JSON line stream.
 
 ## License
 

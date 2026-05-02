@@ -1,5 +1,9 @@
 # NOS Town Agent Resilience & Failover
 
+> Internal runway note: this document describes role-runtime resilience.
+> Current bridge resilience is defined by JSON-safe `nt gascity` failures,
+> provider timeouts, adjudication, and comb traces.
+
 Full failover decision tree, Groq provider failure modes, local fallback configuration, and convoy queueing behavior. NOS Town is designed to remain operational through API outages, rate limits, and model deprecations.
 
 ---

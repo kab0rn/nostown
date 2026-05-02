@@ -141,7 +141,7 @@ export class Ledger {
     const lockStart = Date.now();
     try {
       release = await lockfile.lock(filePath, {
-        retries: { retries: 20, minTimeout: 20, maxTimeout: 200, factor: 1.5, randomize: true },
+        retries: { retries: 200, minTimeout: 5, maxTimeout: 50, factor: 1.2, randomize: true },
         stale: 15000,
         realpath: false,
       });

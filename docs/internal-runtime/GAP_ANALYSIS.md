@@ -1,5 +1,9 @@
 # NOS Town — Gap Analysis
 
+> Internal runway note: this gap analysis covers the legacy/future role runtime.
+> It does not redefine the current Queen UX, role-neutral `nt gascity` bridge,
+> or static Gas City integration through `city.toml`.
+
 **Date:** 2026-04-14  
 **Baseline:** 550 tests passing, TypeScript clean, all P1–P13 implementation plan items merged.  
 **Scope:** Implementation vs. product vision as documented in `docs/`.
@@ -398,10 +402,10 @@ Once Mayor tracks active rooms (currently not implemented), wire the Safeguard a
 
 ### L5 — KG Bootstrap Script Not Runnable
 
-**Spec:** `KNOWLEDGE_GRAPH.md` §Bootstrap — "Run once on first startup to seed KG from static routing table: `npx tsx src/historian/bootstrap-kg.ts --routing-table docs/ROUTING.md`"
+**Spec:** `KNOWLEDGE_GRAPH.md` §Bootstrap — "Run once on first startup to seed KG from static routing table: `npx tsx src/historian/bootstrap-kg.ts --routing-table docs/internal-runtime/ROUTING.md`"
 
 **Current state:**  
-`src/historian/bootstrap-kg.ts` exists but reads the routing table from a fixed path (`docs/ROUTING.md`) and has no `--routing-table` flag. The script structure is correct but the CLI arg parsing is incomplete.
+`src/historian/bootstrap-kg.ts` exists but reads the routing table from a fixed path (`docs/internal-runtime/ROUTING.md`) and has no `--routing-table` flag. The script structure is correct but the CLI arg parsing is incomplete.
 
 **What to build:**  
 Add `process.argv` parsing for `--routing-table` and `--kg-path` flags, and add a `--dry-run` mode that prints what triples would be written without committing them.

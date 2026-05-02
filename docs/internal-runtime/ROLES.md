@@ -1,5 +1,10 @@
 # NOS Town Roles - Performance Optimized
 
+> Internal runway note: this document describes the legacy/future role runtime.
+> It is not the current public UX, `nt gascity` bridge schema, or Gas City
+> integration contract. Current operator language is Queen/Hive/Swarm/Comb, and
+> the bridge remains role-neutral.
+
 High-fidelity role definitions for the NOS Town multi-agent system. Each role is tuned for Groq's low-latency, high-throughput environment, utilizing the "Preview-Primary" strategy for maximum capability.
 
 ---

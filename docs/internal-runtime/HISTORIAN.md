@@ -1,5 +1,8 @@
 # NOS Town Historian — Persistence & Memory
 
+> Internal runway note: Historian/KG loops are future runtime capabilities behind
+> NOSTown. They are not required by the current `nt gascity` bridge contract.
+
 Institutional memory system for mining patterns, generating Playbooks, and evolving the NOS Town multi-agent swarm. Backed by the Ledger (JSONL) and Knowledge Graph (SQLite) — no external sidecar required.
 
 ---

@@ -1,5 +1,9 @@
 # Swarm Coordination
 
+> Internal runway note: this document describes broader role-runtime swarm
+> behavior. The current public swarm bridge is the role-neutral `nt gascity`
+> adapter documented in `../GASCITY_BRIDGE.md`.
+
 NOS Town supports multi-agent swarm workflows where multiple roles collaborate on complex tasks requiring parallel execution and cross-role coordination.
 
 ---

@@ -1,5 +1,9 @@
 # NOS Town Observability & Metrics
 
+> Internal runway note: these metrics cover the broader legacy/future role
+> runtime. The current bridge contract exposes compact `nos.consensus.*`
+> metadata in Gas City and full traces in the local comb.
+
 To ensure the reliability and performance of the NOS Town multi-agent system, we implement a comprehensive observability strategy based on the three pillars: Metrics, Tracing, and Logging.
 
 ## 1. Metrics Strategy

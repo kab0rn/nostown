@@ -1,13 +1,14 @@
 {
   "name": "nos-town",
   "version": "0.1.0",
-  "description": "NOS Town — Groq-native multi-agent orchestration system",
+  "description": "NOSTown — bridge-first swarm consensus runtime for Gas City",
   "type": "module",
   "main": "dist/index.js",
   "engines": {
     "node": ">=20.0.0"
   },
   "bin": {
+    "nt": "./scripts/nt.sh",
     "nos": "./scripts/nos.sh"
   },
   "scripts": {
@@ -16,7 +17,9 @@
     "test": "jest",
     "test:unit": "jest tests/unit/",
     "test:integration": "jest tests/integration/",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "smoke:gascity": "scripts/smoke-gascity-bridge.sh --read-only",
+    "test:ci": "npm run typecheck && npm run build && npm test -- --runInBand --silent && (cd cmd/nt && go test ./...)"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

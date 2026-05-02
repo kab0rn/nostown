@@ -5,7 +5,8 @@
 #   ./scripts/install-nt.sh             # installs to ~/.local/bin/nt
 #   ./scripts/install-nt.sh /usr/local/bin
 #
-# After install, `nt <task>` orchestrates tasks and `nt` opens an interactive session.
+# After install, `nt` opens the Queen shell and `nt gascity ...` exposes the
+# Gas City-safe bridge adapter.
 
 set -euo pipefail
 
@@ -13,16 +14,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 INSTALL_DIR="${1:-$HOME/.local/bin}"
 BUILD_DIR="$PROJECT_DIR/cmd/nt"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
-echo "[NOS Town] Building nt binary..."
-(cd "$BUILD_DIR" && go build -o "$BUILD_DIR/nt" .)
+echo "[NOSTown] Building nt binary..."
+(cd "$BUILD_DIR" && go build -o "$TMP_DIR/nt" .)
 
-echo "[NOS Town] Installing to $INSTALL_DIR/nt..."
+echo "[NOSTown] Installing to $INSTALL_DIR/nt..."
 mkdir -p "$INSTALL_DIR"
-cp "$BUILD_DIR/nt" "$INSTALL_DIR/nt"
+cp "$TMP_DIR/nt" "$INSTALL_DIR/nt"
 chmod +x "$INSTALL_DIR/nt"
 
-echo "[NOS Town] Writing project config (~/.nostown/home)..."
+echo "[NOSTown] Writing project config (~/.nostown/home)..."
 mkdir -p "$HOME/.nostown"
 echo "$PROJECT_DIR" > "$HOME/.nostown/home"
 
@@ -38,6 +41,6 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
     echo ""
 fi
 
-echo "  nt status   Show service health"
-echo "  nt          Interactive session"
-echo "  nt <task>   Orchestrate a task"
+echo "  nt queen attach    Start or attach the Queen shell"
+echo "  nt hive status     Show bridge runtime health"
+echo "  nt gascity doctor  Validate Gas City bridge prerequisites"

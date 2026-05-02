@@ -1,5 +1,10 @@
 # NOS Town — Building Guide
 
+> Internal runway note: this guide predates the bridge-first product surface.
+> Treat Mayor/Polecat/Witness material here as internal runtime direction, not
+> the current `nt`/Queen UX or Gas City bridge API. The active integration
+> contract is NOSTown runtime -> bridge adapter -> static Gas City.
+
 How to build NOS Town on top of the [Gas Town](https://github.com/gastownhall/gastown) codebase. This document bridges the gap between the architectural docs and an actual working implementation.
 
 ---

@@ -1,5 +1,9 @@
 # NOS Town Production Hardening Strategy
 
+> Internal runway note: this strategy covers the broader legacy/future runtime.
+> Current production hardening for Gas City lives in `../GASCITY_BRIDGE.md` and
+> keeps Gas City static except `city.toml`.
+
 Production-grade reliability, security, and performance specification for NOS Town. This document defines concrete implementation requirements across three hardening pillars: Resilience & Failover, Data Integrity, and Transport Security.
 
 ---

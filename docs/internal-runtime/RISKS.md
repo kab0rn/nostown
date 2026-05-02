@@ -1,5 +1,9 @@
 # NOS Town Known Risks Register
 
+> Internal runway note: these risks include legacy/future role-runtime concerns.
+> Bridge-path risks should be read against the current Queen + Gas City adapter
+> product surface.
+
 This document tracks the known architectural and implementation risks that remain after the current design corrections. Every risk must have an owner, metric, test strategy, review gate, and go/no-go threshold.
 
 ---

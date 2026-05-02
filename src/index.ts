@@ -6,6 +6,10 @@ import { HeartbeatMonitor } from './monitor/heartbeat.js';
 import { Historian } from './roles/historian.js';
 import { Refinery } from './roles/refinery.js';
 import { runFromStdin } from './swarm/bridge.js';
+import { runGasCityCli } from './gascity/cli.js';
+import { pureSwarmAliasArgs } from './gascity/aliases.js';
+import { renderHiveStatus } from './cli/hive.js';
+import { runQueenShell } from './cli/queen-shell.js';
 import * as readline from 'readline';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -367,6 +371,34 @@ async function main(): Promise<void> {
   const raw  = process.argv.slice(2);
   const args = raw[0] === '--' ? raw.slice(1) : raw;
   const first = args[0];
+
+  // Bridge-first commands must run before legacy runtime setup. They are used
+  // from Gas City's custom sling_query path and must not require NOS role keys,
+  // convoys, or the old Mayor/Polecat/Witness runtime.
+  if (first === 'queen-shell') {
+    await runQueenShell();
+    return;
+  }
+
+  if (first === 'gascity') {
+    process.exitCode = await runGasCityCli(args.slice(1));
+    return;
+  }
+
+  if (first === 'hive') {
+    if (args[1] === 'status' || args[1] === undefined) {
+      process.stdout.write(renderHiveStatus());
+      return;
+    }
+    process.stderr.write(`Unknown hive command: ${args[1]}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (first === 'swarm' && !args.includes('--stdin-params')) {
+    process.exitCode = await runGasCityCli(['swarm', ...pureSwarmAliasArgs(args.slice(1))]);
+    return;
+  }
 
   checkEnv();
 

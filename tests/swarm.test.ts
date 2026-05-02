@@ -48,6 +48,42 @@ describe('majority strategy', () => {
       /All 3 agent responses failed to parse/,
     );
   });
+
+  it('invalid responses count against agreement denominator', () => {
+    const winner = { answer: 42 };
+    const responses: AgentResponse[] = [
+      makeResponse(0, winner),
+      makeResponse(1, winner),
+      makeResponse(2, null, 'agent[2] JSON parse failed'),
+    ];
+
+    const result = resolveConsensus(responses, 'majority');
+    expect(result.agreement).toBeCloseTo(2 / 3);
+    expect(result.invalidCount).toBe(1);
+    expect(result.totalResponses).toBe(3);
+  });
+
+  it('plurality without >50% agreement is not a majority', () => {
+    const responses: AgentResponse[] = [
+      makeResponse(0, { answer: 'a' }),
+      makeResponse(1, { answer: 'b' }),
+      makeResponse(2, { answer: 'c' }),
+    ];
+
+    expect(() => resolveConsensus(responses, 'majority')).toThrow(/no candidate exceeded 50% agreement/);
+  });
+
+  it('deep canonicalization treats nested object key order as equivalent', () => {
+    const responses: AgentResponse[] = [
+      makeResponse(0, { nested: { a: 1, b: 2 } }),
+      makeResponse(1, { nested: { b: 2, a: 1 } }),
+      makeResponse(2, { nested: { a: 9, b: 2 } }),
+    ];
+
+    const result = resolveConsensus(responses, 'majority');
+    expect(result.winner).toEqual({ nested: { a: 1, b: 2 } });
+    expect(result.agreement).toBeCloseTo(2 / 3);
+  });
 });
 
 // ── unanimous ─────────────────────────────────────────────────────────────────
