@@ -149,6 +149,38 @@ describe('Gas City CLI', () => {
     expect(parsed.status).toBe('error');
     expect(parsed.error).toContain('No bridge providers configured');
   });
+
+  it.each([
+    ['workers', ['watch', '--once', '--workers', '0'], '--workers must be a positive integer'],
+    ['quorum', ['watch', '--once', '--quorum', '2'], '--quorum must be in range (0, 1]'],
+    ['timeout', ['watch', '--once', '--timeout-ms', '0'], '--timeout-ms must be a positive integer'],
+  ])('rejects invalid watch %s before polling bd', async (_name, args, expectedError) => {
+    const code = await runGasCityCli(args);
+    const parsed = JSON.parse(stdout);
+
+    expect(code).toBe(1);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error).toContain(expectedError);
+  });
+
+  it('rejects invalid stdin quorum ratios before adjudication', async () => {
+    setStdin(JSON.stringify({
+      bead_id: 'gc-stdin',
+      bead: { id: 'gc-stdin', title: 'From stdin' },
+      strategy: 'first_quorum',
+      quorumRatio: 2,
+      workers: 1,
+    }));
+
+    const code = await runGasCityCli(['swarm', '--stdin', '--json']);
+    const parsed = JSON.parse(stdout);
+
+    expect(code).toBe(1);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error).toContain('quorumRatio must be in range (0, 1]');
+  });
 });
 
 function setStdin(text: string): void {

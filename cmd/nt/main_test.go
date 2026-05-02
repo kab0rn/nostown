@@ -171,8 +171,44 @@ func TestDotEnvParserUsesSafeKeyValueLines(t *testing.T) {
 	if _, ok := parseDotEnvLine("source ./anything"); ok {
 		t.Fatal("expected shell syntax to be ignored")
 	}
+	if _, ok := parseDotEnvLine("export GROQ_API_KEY=from-dotenv"); ok {
+		t.Fatal("expected shell export syntax to be ignored")
+	}
+	if _, ok := parseDotEnvLine("BAD-KEY=value"); ok {
+		t.Fatal("expected unsafe dotenv key to be ignored")
+	}
 	if _, ok := parseDotEnvLine("# comment"); ok {
 		t.Fatal("expected comments to be ignored")
+	}
+}
+
+func TestBootstrapUsesInternalRuntimeRoutingByDefault(t *testing.T) {
+	tmp := t.TempDir()
+	writeFakeTmux(t, tmp)
+	writeFakeNpx(t, tmp, `#!/bin/sh
+printf '%s\n' "$*" > "$NT_FAKE_NPX_LOG"
+exit 0
+`)
+	logPath := filepath.Join(tmp, "npx.log")
+	nosHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(nosHome, "src", "historian"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := helperCmd(t, tmp, []string{"bootstrap"})
+	cmd.Env = mergeEnv(os.Environ(),
+		"GO_WANT_NT_HELPER_PROCESS=1",
+		"PATH="+tmp+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"NOS_HOME="+nosHome,
+		"NT_FAKE_NPX_LOG="+logPath,
+		"TMUX=",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("nt helper failed: %v\n%s", err, out)
+	}
+	log := readLog(t, logPath)
+	want := filepath.Join(nosHome, "docs", "internal-runtime", "ROUTING.md")
+	if !strings.Contains(log, want) {
+		t.Fatalf("expected bootstrap to use internal runtime routing path %q, got:\n%s", want, log)
 	}
 }
 

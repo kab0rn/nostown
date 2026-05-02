@@ -22,7 +22,7 @@ echo "[NOSTown] Building nt binary..."
 
 echo "[NOSTown] Installing to $INSTALL_DIR/nt..."
 mkdir -p "$INSTALL_DIR"
-cp "$TMP_DIR/nt" "$INSTALL_DIR/nt"
+cp -f "$TMP_DIR/nt" "$INSTALL_DIR/nt"
 chmod +x "$INSTALL_DIR/nt"
 
 echo "[NOSTown] Writing project config (~/.nostown/home)..."

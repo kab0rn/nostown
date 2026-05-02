@@ -182,7 +182,7 @@ Project: %s
 
 func cmdBootstrap(args []string) {
 	nosHome := mustFindNosHome()
-	routingTable := filepath.Join(nosHome, "docs", "ROUTING.md")
+	routingTable := filepath.Join(nosHome, "docs", "internal-runtime", "ROUTING.md")
 	if len(args) > 1 && args[0] == "--routing-table" {
 		routingTable = args[1]
 	}
@@ -452,10 +452,23 @@ func parseDotEnvLine(line string) (dotEnvEntry, bool) {
 		return dotEnvEntry{}, false
 	}
 	key := strings.TrimSpace(line[:idx])
-	if key == "" {
+	if !isDotEnvKey(key) {
 		return dotEnvEntry{}, false
 	}
 	return dotEnvEntry{key: key, value: strings.TrimSpace(line[idx+1:])}, true
+}
+
+func isDotEnvKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, r := range key {
+		if r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (i > 0 && r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func writeBridgeError(args []string, err error) {

@@ -9,7 +9,16 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
 if [[ -f "$PROJECT_DIR/.env" ]]; then
-    set -a && source "$PROJECT_DIR/.env" && set +a
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        if [[ -z "${!key+x}" ]]; then
+            export "$key=$value"
+        fi
+    done < "$PROJECT_DIR/.env"
 fi
 
 if [[ ! -d node_modules ]]; then
