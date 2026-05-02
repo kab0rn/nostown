@@ -78,7 +78,7 @@ printf '%s\n' "$watch_error" | assert_json_error
 
 echo "[smoke] pure stdin swarm"
 printf '%s\n' '{"schema":"gascity.swarm.v1","bead_id":"smoke-1","bead":{"id":"smoke-1","title":"Read-only smoke"},"mode":"pure","workers":1}' \
-  | nt gascity swarm --stdin --json \
+  | nt gascity swarm --stdin --json --instructions --prefer-small-patch \
   | assert_json_ok
 
 if find "$TMP_DIR/comb" -maxdepth 1 -type f -name '*.json' | grep -q .; then

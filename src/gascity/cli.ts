@@ -15,7 +15,11 @@ import {
 } from './options.js';
 
 type FlagKind = 'boolean' | 'value';
-type FlagSpec = Record<string, FlagKind>;
+interface FlagConfig {
+  kind: FlagKind;
+  allowLeadingDashValue?: boolean;
+}
+type FlagSpec = Record<string, FlagKind | FlagConfig>;
 
 interface ParsedArgs {
   flags: Map<string, string | true>;
@@ -32,7 +36,7 @@ const SWARM_FLAGS: FlagSpec = {
   '--workers': 'value',
   '--quorum': 'value',
   '--timeout-ms': 'value',
-  '--instructions': 'value',
+  '--instructions': { kind: 'value', allowLeadingDashValue: true },
   '--json': 'boolean',
 };
 
@@ -79,6 +83,7 @@ async function swarmResult(args: string[]): Promise<JsonCliResult> {
       quorumRatio: parseQuorumRatio(parsed.value('--quorum')) ?? request.quorumRatio,
       workers: parseWorkers(parsed.value('--workers')) ?? request.workers,
       timeoutMs: parsePositiveInteger(parsed.value('--timeout-ms'), '--timeout-ms') ?? request.timeoutMs,
+      instructions: parsed.value('--instructions') ?? request.instructions,
     });
     return { code: result.ok ? 0 : 1, payload: result as unknown as Record<string, unknown> };
   }
@@ -194,16 +199,16 @@ function parseArgs(args: string[], spec: FlagSpec): ParsedArgs {
     const eq = arg.indexOf('=');
     const flag = eq >= 0 ? arg.slice(0, eq) : arg;
     const inlineValue = eq >= 0 ? arg.slice(eq + 1) : undefined;
-    const kind = spec[flag];
-    if (!kind) throw new Error(`unknown flag: ${flag}`);
+    const config = flagConfig(spec, flag);
+    if (!config) throw new Error(`unknown flag: ${flag}`);
     if (flags.has(flag)) throw new Error(`duplicate flag: ${flag}`);
-    if (kind === 'boolean') {
+    if (config.kind === 'boolean') {
       if (inlineValue !== undefined) throw new Error(`${flag} does not take a value`);
       flags.set(flag, true);
       continue;
     }
     const value = inlineValue ?? args[++i];
-    if (value === undefined || value === '' || value.startsWith('--')) {
+    if (value === undefined || value === '' || (!config.allowLeadingDashValue && value.startsWith('--'))) {
       throw new Error(`${flag} requires a value`);
     }
     flags.set(flag, value);
@@ -219,6 +224,12 @@ function parseArgs(args: string[], spec: FlagSpec): ParsedArgs {
       return typeof value === 'string' ? value : undefined;
     },
   };
+}
+
+function flagConfig(spec: FlagSpec, flag: string): FlagConfig | undefined {
+  const config = spec[flag];
+  if (!config) return undefined;
+  return typeof config === 'string' ? { kind: config } : config;
 }
 
 function writeJson(result: JsonCliResult): number {

@@ -1,6 +1,8 @@
 import { runGasCityCli } from '../../src/gascity/cli';
 import { Readable } from 'stream';
+import * as fs from 'fs';
 import * as os from 'os';
+import * as path from 'path';
 
 describe('Gas City CLI', () => {
   const oldStdout = process.stdout.write;
@@ -180,6 +182,36 @@ describe('Gas City CLI', () => {
     expect(parsed.ok).toBe(false);
     expect(parsed.status).toBe('error');
     expect(parsed.error).toContain('quorumRatio must be in range (0, 1]');
+  });
+
+  it('lets stdin --instructions override request instructions, including dash-prefixed text', async () => {
+    const combDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nos-cli-instructions-'));
+    process.env.NOS_COMB_DIR = combDir;
+    try {
+      setStdin(JSON.stringify({
+        bead_id: 'gc-stdin',
+        bead: { id: 'gc-stdin', title: 'From stdin' },
+        mode: 'pure',
+        workers: 1,
+        instructions: 'request instructions',
+      }));
+
+      const code = await runGasCityCli([
+        'swarm',
+        '--stdin',
+        '--json',
+        '--instructions',
+        '--prefer-small-patch',
+      ]);
+      const parsed = JSON.parse(stdout);
+      const comb = JSON.parse(fs.readFileSync(parsed.comb_path, 'utf8'));
+
+      expect(code).toBe(0);
+      expect(parsed.ok).toBe(true);
+      expect(comb.request.instructions).toBe('--prefer-small-patch');
+    } finally {
+      fs.rmSync(combDir, { recursive: true, force: true });
+    }
   });
 });
 
